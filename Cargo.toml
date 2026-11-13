@@ -1,0 +1,31 @@
+[package]
+name = "mintool"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+description = "A lightweight, terminal-first project workspace"
+
+[dependencies]
+anyhow = "1"
+notify = { version = "8.2", default-features = false }
+adabraka-ui = { version = "=0.3.9", default-features = false }
+gpui = { package = "adabraka-gpui", version = "=0.5.1" }
+portable-pty = "0.9"
+vt100 = "0.15"
+vte = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+xim-ctext = "=0.3.0"
+
+[profile.release]
+strip = true
+
+[patch.crates-io]
+adabraka-gpui = { path = "vendor/adabraka-gpui" }
+xim-ctext = { path = "vendor/xim-ctext" }
+zed-xim = { path = "vendor/zed-xim" }
