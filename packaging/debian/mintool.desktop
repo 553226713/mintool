@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Mintool
+Comment=Terminal-first project workspace
+Comment[zh_CN]=以终端为核心的项目工作台
+Exec=/usr/bin/mintool %f
+Icon=/usr/share/icons/hicolor/256x256/apps/mintool.png
+Terminal=false
+Categories=Development;
+StartupWMClass=mintool

@@ -40,6 +40,25 @@ sudo apt install clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev \
 
 首个版本 `v0.1.0` 包含独立项目终端与分屏、Git 变更定位、原生文件事件同步、资源树右键操作、分类图标及深浅主题切换。
 
+## Debian / Ubuntu 安装包
+
+```bash
+./package-deb.sh
+```
+
+产物为 `dist/mintool_0.1.0-1_amd64.deb`（架构随构建机变化），同时生成 SHA-256 校验文件。构建依赖 `dpkg-dev` 和 `desktop-file-utils`；安装包声明程序的运行依赖，并包含 PNG/SVG 图标、系统应用菜单入口和图标缓存更新脚本。当前包在 Ubuntu 26.04 amd64 上构建，其他发行版需要满足包内的动态库版本要求。
+
+如果之前运行过 `install.sh`，先把旧的用户安装移到备份目录，避免它优先于安装包的程序及桌面入口：
+
+```bash
+mkdir -p ~/.local/share/mintool-local-backup
+[ ! -f ~/.local/share/applications/mintool.desktop ] || mv ~/.local/share/applications/mintool.desktop ~/.local/share/mintool-local-backup/
+[ ! -f ~/.local/bin/mintool ] || mv ~/.local/bin/mintool ~/.local/share/mintool-local-backup/
+sudo apt install ./dist/mintool_0.1.0-1_amd64.deb
+```
+
+之后从应用菜单搜索 **Mintool**，或运行 `/usr/bin/mintool`。包管理器负责升级与卸载；用户项目、布局和主题设置仍保存在 `~/.mintool/`，不由安装脚本修改。
+
 ## 已实现
 
 - 添加项目时可选择所属分组；分组右键可直接添加到该分组。目录选择器只回填路径，确认后才添加；无效路径、空名称、重复分组名会在弹窗内提示。
