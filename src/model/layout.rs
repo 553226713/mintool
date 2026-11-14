@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq)]
 pub enum Axis {
@@ -11,6 +14,8 @@ pub struct Pane {
     pub id: u64,
     pub file: Option<PathBuf>,
     pub showing_file: bool,
+    #[serde(default = "default_true")]
+    pub terminal: bool,
     #[serde(default)]
     pub terminal_closed: bool,
 }
@@ -32,6 +37,8 @@ pub struct WorkspaceState {
     pub focused: u64,
     pub next_id: u64,
     pub expanded: BTreeSet<PathBuf>,
+    #[serde(default)]
+    pub files: BTreeMap<u64, PathBuf>,
 }
 impl Default for WorkspaceState {
     fn default() -> Self {
@@ -41,6 +48,7 @@ impl Default for WorkspaceState {
             focused: 1,
             next_id: 2,
             expanded: BTreeSet::new(),
+            files: BTreeMap::new(),
         }
     }
 }
@@ -50,7 +58,17 @@ impl Layout {
             id,
             file: None,
             showing_file: false,
+            terminal: true,
             terminal_closed: false,
+        })
+    }
+    pub fn file_pane(id: u64, path: PathBuf) -> Self {
+        Self::Pane(Pane {
+            id,
+            file: Some(path),
+            showing_file: true,
+            terminal: false,
+            terminal_closed: true,
         })
     }
     pub fn first_id(&self) -> u64 {
@@ -201,5 +219,51 @@ impl Layout {
             return first.close(id) || second.close(id);
         }
         false
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl WorkspaceState {
+    pub fn pane_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::new();
+        self.layout.ids(&mut ids);
+        ids.extend(self.files.keys().copied());
+        ids
+    }
+
+    pub fn file_pane(&self, id: u64) -> Option<Pane> {
+        self.files.get(&id).cloned().map(|path| Pane {
+            id,
+            file: Some(path),
+            showing_file: true,
+            terminal: false,
+            terminal_closed: true,
+        })
+    }
+
+    pub fn migrate_nested_files(&mut self) {
+        let mut nested = Vec::new();
+        let mut ids = Vec::new();
+        self.layout.ids(&mut ids);
+        for id in ids {
+            if let Some(path) = self.layout.find(id).and_then(|pane| pane.file.clone()) {
+                nested.push((id, path));
+            }
+        }
+        for (terminal_id, path) in nested {
+            let file_id = self.next_id;
+            self.next_id = self.next_id.saturating_add(1);
+            if let Some(pane) = self.layout.find_mut(terminal_id) {
+                pane.file = None;
+                pane.showing_file = false;
+            }
+            self.files.insert(file_id, path);
+            if let Some(dock) = &mut self.dock_layout {
+                dock.add_tab_after(terminal_id, file_id);
+            }
+        }
     }
 }

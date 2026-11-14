@@ -6,7 +6,7 @@ use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
     dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel},
-    Sizable,
+    Disableable, Sizable,
 };
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -52,32 +52,45 @@ impl Panel for DockPane {
     fn panel_name(&self) -> &'static str {
         "MintoolPane"
     }
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (app, id) = (self.app.clone(), self.id);
         let middle_app = app.clone();
+        let (closed, file_name) = app.upgrade().map_or((false, None), |app| {
+            let app = app.read(cx);
+            let Some(workspace) = app.workspaces.get(&self.project.id) else {
+                return (false, None);
+            };
+            let file_name = workspace
+                .state
+                .files
+                .get(&id)
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned());
+            let closed = workspace.state.files.contains_key(&id)
+                || workspace
+                    .state
+                    .layout
+                    .find(id)
+                    .is_none_or(|pane| pane.terminal_closed);
+            (closed, file_name)
+        });
         div()
             .id(("terminal-tab", id))
             .h_full()
             .flex()
             .items_center()
             .gap_2()
-            .child(format!("终端 {id}"))
+            .child(if let Some(file_name) = file_name {
+                file_name
+            } else if closed {
+                "空面板".to_string()
+            } else {
+                format!("终端 {id}")
+            })
             .on_mouse_down(MouseButton::Middle, move |_, _, cx| {
                 let _ = middle_app.update(cx, |app, cx| app.close_pane(id, cx));
                 cx.stop_propagation();
             })
-            .child(
-                Button::new(("close-terminal", id))
-                    .icon(gpui_component::IconName::Close)
-                    .ghost()
-                    .xsmall()
-                    .tooltip("关闭终端并停止关联进程")
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(move |_, _, cx| {
-                        let _ = app.update(cx, |app, cx| app.close_pane(id, cx));
-                        cx.stop_propagation();
-                    }),
-            )
     }
     fn closable(&self, _: &App) -> bool {
         self.count.load(Ordering::Relaxed) > 1
@@ -103,26 +116,85 @@ impl Panel for DockPane {
             });
         });
     }
-    fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
-        Some(
-            [
-                (Axis::Horizontal, "左右拆分", "icons/columns-2.svg"),
-                (Axis::Vertical, "上下拆分", "icons/rows-2.svg"),
-            ]
-            .into_iter()
-            .map(|(axis, tip, icon)| {
-                let (app, id) = (self.app.clone(), self.id);
-                Button::new(tip)
-                    .icon(gpui_component::Icon::default().path(icon))
-                    .ghost()
-                    .small()
-                    .tooltip(tip)
-                    .on_click(move |_, _, cx| {
-                        let _ = app.update(cx, |app, cx| app.split(id, axis, cx));
-                    })
-            })
-            .collect(),
-        )
+    fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        let app = self.app.upgrade()?;
+        if app
+            .read(cx)
+            .workspaces
+            .get(&self.project.id)
+            .is_some_and(|workspace| workspace.state.files.contains_key(&self.id))
+        {
+            let app = self.app.clone();
+            let id = self.id;
+            let closable = self.count.load(Ordering::Relaxed) > 1;
+            return Some(vec![Button::new("close-file")
+                .icon(gpui_component::IconName::Close)
+                .ghost()
+                .small()
+                .tooltip("关闭文件预览")
+                .disabled(!closable)
+                .on_click(move |_, _, cx| {
+                    let _ = app.update(cx, |app, cx| app.close_pane(id, cx));
+                })]);
+        }
+        let showing_file = app
+            .read(cx)
+            .workspaces
+            .get(&self.project.id)
+            .and_then(|workspace| workspace.state.layout.find(self.id))
+            .is_some_and(|pane| pane.showing_file);
+        if showing_file {
+            return None;
+        }
+
+        let link_app = self.app.clone();
+        let split_app = self.app.clone();
+        let close_app = self.app.clone();
+        let id = self.id;
+        let closable = self.count.load(Ordering::Relaxed) > 1;
+        Some(vec![
+            Button::new("open-clipboard-link")
+                .icon(gpui_component::Icon::default().path("icons/external-link.svg"))
+                .ghost()
+                .small()
+                .tooltip("打开剪贴板中的链接")
+                .on_click(move |_, _, cx| {
+                    if let Err(error) = crate::services::desktop::Desktop::open_clipboard_link() {
+                        let _ = link_app.update(cx, |app, cx| {
+                            app.error = Some(format!("{error:#}"));
+                            app.changed(cx);
+                        });
+                    }
+                }),
+            Button::new("horizontal-split")
+                .icon(gpui_component::Icon::default().path("icons/columns-2.svg"))
+                .ghost()
+                .small()
+                .tooltip("左右拆分")
+                .on_click({
+                    let app = split_app.clone();
+                    move |_, _, cx| {
+                        let _ = app.update(cx, |app, cx| app.split(id, Axis::Horizontal, cx));
+                    }
+                }),
+            Button::new("vertical-split")
+                .icon(gpui_component::Icon::default().path("icons/rows-2.svg"))
+                .ghost()
+                .small()
+                .tooltip("上下拆分")
+                .on_click(move |_, _, cx| {
+                    let _ = split_app.update(cx, |app, cx| app.split(id, Axis::Vertical, cx));
+                }),
+            Button::new("close-terminal")
+                .icon(gpui_component::IconName::Close)
+                .ghost()
+                .small()
+                .tooltip("关闭终端并停止关联进程")
+                .disabled(!closable)
+                .on_click(move |_, _, cx| {
+                    let _ = close_app.update(cx, |app, cx| app.close_pane(id, cx));
+                }),
+        ])
     }
     fn dump(&self, _: &App) -> PanelState {
         PanelState {
@@ -140,13 +212,11 @@ impl Render for DockPane {
         let content = self
             .app
             .update(cx, |app, cx| {
-                let pane = app
-                    .workspaces
-                    .get_mut(&project.id)?
+                let workspace = app.workspaces.get_mut(&project.id)?;
+                let pane = workspace
                     .state
-                    .layout
-                    .find_mut(id)?
-                    .clone();
+                    .file_pane(id)
+                    .or_else(|| workspace.state.layout.find_mut(id).cloned())?;
                 Some(app.render_pane(&project, &pane, bounds, window, cx))
             })
             .ok()

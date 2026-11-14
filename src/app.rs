@@ -55,6 +55,7 @@ pub struct MintoolApp {
     pub(crate) panel_states: HashMap<String, (Entity<ResizableState>, Subscription)>,
     pub(crate) docks: HashMap<String, crate::ui::dock_workspace::DockWorkspace>,
     pub(crate) dock_splits: Vec<(String, u64, u64, Axis)>,
+    pub(crate) dock_file_tabs: Vec<(String, u64, u64)>,
     pub(crate) dock_closes: Vec<(String, u64)>,
     viewport_size: Option<Size<Pixels>>,
     pub(crate) menu: Option<(Point<Pixels>, Vec<MenuItem>)>,
@@ -124,6 +125,7 @@ impl MintoolApp {
             panel_states: HashMap::new(),
             docks: HashMap::new(),
             dock_splits: Vec::new(),
+            dock_file_tabs: Vec::new(),
             dock_closes: Vec::new(),
             viewport_size: None,
             menu: None,
@@ -371,6 +373,7 @@ impl MintoolApp {
         self.workspaces.remove(id);
         self.docks.remove(id);
         self.dock_splits.retain(|(project, ..)| project != id);
+        self.dock_file_tabs.retain(|(project, ..)| project != id);
         self.dock_closes.retain(|(project, ..)| project != id);
         self.projects.remove(id);
         self.focus_pending = true;
@@ -378,14 +381,18 @@ impl MintoolApp {
     }
     pub(crate) fn open_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if let Some(id) = self.projects.selected.clone() {
-            if let Some(focused) = self.workspaces.get(&id).map(|w| w.state.focused) {
-                self.clear_preview(&id, focused);
-            }
             if let Some(w) = self.workspaces.get_mut(&id) {
-                if let Some(p) = w.state.layout.find_mut(w.state.focused) {
-                    p.file = Some(path);
-                    p.showing_file = true;
-                }
+                let anchor = if w.state.layout.find(w.state.focused).is_some()
+                    || w.state.files.contains_key(&w.state.focused)
+                {
+                    w.state.focused
+                } else {
+                    w.state.layout.first_id()
+                };
+                let file_id = w.state.next_id;
+                w.state.next_id = w.state.next_id.saturating_add(1);
+                w.state.files.insert(file_id, path);
+                self.dock_file_tabs.push((id.clone(), anchor, file_id));
             }
         }
         self.changed(cx);
@@ -393,6 +400,11 @@ impl MintoolApp {
     pub(crate) fn split(&mut self, pane: u64, axis: Axis, cx: &mut Context<Self>) {
         if let Some(id) = self.projects.selected.as_ref() {
             if let Some(w) = self.workspaces.get_mut(id) {
+                let pane = if w.state.layout.find(pane).is_some() {
+                    pane
+                } else {
+                    w.state.layout.first_id()
+                };
                 let next = w.state.next_id;
                 if w.state.layout.split(pane, next, axis) {
                     self.dock_splits.push((id.clone(), pane, next, axis));
@@ -629,7 +641,8 @@ impl Render for MintoolApp {
         if let Some(project) = &current {
             if !self.workspaces.contains_key(&project.id) {
                 match self.storage.workspace(&project.id) {
-                    Ok(state) => {
+                    Ok(mut state) => {
+                        state.migrate_nested_files();
                         self.workspaces
                             .insert(project.id.clone(), Workspace::new(state));
                     }

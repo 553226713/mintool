@@ -3651,6 +3651,7 @@ dependencies = [
  "uuid",
  "vt100",
  "vte 0.11.1",
+ "x11-clipboard",
  "x11rb",
  "xim-ctext",
 ]

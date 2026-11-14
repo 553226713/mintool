@@ -45,8 +45,7 @@ impl MintoolApp {
                 DockArea::new(format!("workspace-{key}"), Some(1), window, cx)
                     .panel_style(PanelStyle::TabBar)
             });
-            let mut ids = Vec::new();
-            layout.ids(&mut ids);
+            let ids = self.workspaces[&key].state.pane_ids();
             let count = Arc::new(AtomicUsize::new(ids.len()));
             let panels = ids
                 .iter()
@@ -70,7 +69,14 @@ impl MintoolApp {
                 .dock_layout
                 .clone()
                 .filter(|saved| saved.valid_for(&ids));
-            let saved = split_root(saved.unwrap_or_else(|| from_legacy(layout)));
+            let saved = saved.unwrap_or_else(|| {
+                let mut dock = split_root(from_legacy(layout));
+                let anchor = layout.first_id();
+                for file_id in self.workspaces[&key].state.files.keys() {
+                    dock.add_tab_after(anchor, *file_id);
+                }
+                dock
+            });
             let center = build_item(&saved, &panels, &area.downgrade(), window, cx);
             area.update(cx, |area, cx| area.set_center(center, window, cx));
             let project_id = key.clone();
@@ -90,6 +96,38 @@ impl MintoolApp {
                     _subscription: subscription,
                 },
             );
+        }
+        let requests = std::mem::take(&mut self.dock_file_tabs);
+        for (project_id, anchor, next) in requests {
+            if project_id != key {
+                self.dock_file_tabs.push((project_id, anchor, next));
+                continue;
+            }
+            let dock = self.docks.get_mut(&key).unwrap();
+            if dock.panels.contains_key(&next) {
+                continue;
+            }
+            let panel = cx.new(|child_cx| {
+                DockPane::new(
+                    app.clone(),
+                    project.clone(),
+                    next,
+                    dock.count.clone(),
+                    child_cx,
+                )
+            });
+            let group = dock
+                .panels
+                .get(&anchor)
+                .and_then(|panel| panel.read(cx).group.clone());
+            if let Some(group) = group {
+                let panel_view: Arc<dyn PanelView> = Arc::new(panel.clone());
+                let _ = group.update(cx, |group, cx| group.add_panel(panel_view, window, cx));
+                dock.panels.insert(next, panel);
+                dock.count.store(dock.panels.len(), Ordering::Relaxed);
+            } else if let Some(workspace) = self.workspaces.get_mut(&key) {
+                workspace.state.files.remove(&next);
+            }
         }
         let requests = std::mem::take(&mut self.dock_splits);
         for (project_id, target, next, axis) in requests {
@@ -181,6 +219,15 @@ impl MintoolApp {
                 .collect();
             for id in removed {
                 dock.panels.remove(&id);
+                let is_file = self
+                    .workspaces
+                    .get_mut(&key)
+                    .is_some_and(|workspace| workspace.state.files.remove(&id).is_some());
+                if is_file {
+                    self.previews.remove(&(key.clone(), id));
+                    self.image_previews.remove(&(key.clone(), id));
+                    continue;
+                }
                 if let Some(session) = self
                     .workspaces
                     .get_mut(&key)

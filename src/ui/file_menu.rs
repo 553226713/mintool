@@ -18,6 +18,11 @@ impl MintoolApp {
                 paths.insert(parent.to_path_buf());
             }
             if let Some(workspace) = self.workspaces.get(&project.id) {
+                for file in workspace.state.files.values() {
+                    if let Some(parent) = file.parent() {
+                        paths.insert(parent.to_path_buf());
+                    }
+                }
                 for path in &workspace.state.expanded {
                     if path.starts_with(&project.path)
                         && path
@@ -69,11 +74,17 @@ impl MintoolApp {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         let destination = action.execute(name)?;
-        for workspace in self.workspaces.values_mut() {
+        let mut removed_file_panes = Vec::new();
+        for (project_id, workspace) in self.workspaces.iter_mut() {
             workspace.cache.invalidate();
             match action {
                 FileAction::Rename(old) => {
                     if let Some(new) = &destination {
+                        for file in workspace.state.files.values_mut() {
+                            if let Ok(relative) = file.strip_prefix(old) {
+                                *file = new.join(relative);
+                            }
+                        }
                         let mut ids = Vec::new();
                         workspace.state.layout.ids(&mut ids);
                         for id in ids {
@@ -102,8 +113,28 @@ impl MintoolApp {
                 }
                 FileAction::Trash(path) => {
                     workspace.state.expanded.retain(|p| !p.starts_with(path));
+                    let removed: Vec<_> = workspace
+                        .state
+                        .files
+                        .iter()
+                        .filter(|(_, file)| file.starts_with(path))
+                        .map(|(id, _)| *id)
+                        .collect();
+                    workspace
+                        .state
+                        .files
+                        .retain(|_, file| !file.starts_with(path));
+                    removed_file_panes.extend(
+                        removed
+                            .into_iter()
+                            .map(|file_id| (project_id.clone(), file_id)),
+                    );
                 }
             }
+        }
+        for close in removed_file_panes {
+            self.clear_preview(&close.0, close.1);
+            self.dock_closes.push(close);
         }
         if matches!(action, FileAction::NewFile(_)) {
             if let Some(path) = destination {

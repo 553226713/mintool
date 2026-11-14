@@ -18,6 +18,9 @@ impl AssetSource for Assets {
             }
             "icons/columns-2.svg" => include_bytes!("../../assets/icons/columns-2.svg").as_slice(),
             "icons/file-text.svg" => include_bytes!("../../assets/icons/file-text.svg").as_slice(),
+            "icons/external-link.svg" => {
+                include_bytes!("../../assets/icons/external-link.svg").as_slice()
+            }
             "icons/files.svg" => include_bytes!("../../assets/icons/files.svg").as_slice(),
             "icons/folder-closed.svg" => {
                 include_bytes!("../../assets/icons/folder-closed.svg").as_slice()
@@ -92,6 +95,7 @@ const ICONS: &[&str] = &[
     "icons/chevron-right.svg",
     "icons/columns-2.svg",
     "icons/file-text.svg",
+    "icons/external-link.svg",
     "icons/files.svg",
     "icons/folder-closed.svg",
     "icons/folder-open.svg",

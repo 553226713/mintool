@@ -45,22 +45,24 @@ fn detects_only_executable_embeddable_terminals_and_keeps_path_priority() {
     );
     assert_eq!(command.get_current_dir(), Some(root.path()));
     let command = detected[1].command(123, root.path(), "/bin/bash").unwrap();
+    let args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     assert_eq!(
-        command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>(),
+        &args[..8],
         [
             "-fa",
             "monospace:lang=zh-cn",
             "-fs",
             "12",
-            "-into",
-            "123",
-            "-e",
-            "/bin/bash"
+            "-xrm",
+            "XTerm*selectToClipboard: true",
+            "-xrm",
+            "XTerm*keepSelection: true",
         ]
     );
+    assert_eq!(&args[8..], ["-into", "123", "-e", "/bin/bash"]);
 }
 
 #[test]

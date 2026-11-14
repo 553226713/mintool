@@ -5,7 +5,10 @@ use adabraka_ui::components::{
     text::Text,
 };
 use gpui::*;
-use gpui_component::text::TextView;
+use gpui_component::{
+    scroll::{Scrollbar, ScrollbarShow},
+    text::TextView,
+};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -269,6 +272,7 @@ impl Render for FilePreview {
         .h(px((self.height - 33.).max(1.)))
         .with_sizing_behavior(ListSizingBehavior::Auto)
         .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained);
+        let entity_id = cx.entity_id();
         div()
             .id("file-preview")
             .w_full()
@@ -355,7 +359,18 @@ impl Render for FilePreview {
                 div()
                     .h(px((self.height - 33.).max(1.)))
                     .w_full()
-                    .child(rows),
+                    .relative()
+                    .child(rows)
+                    .child(
+                        Scrollbar::vertical(&self.scroll)
+                            .id(("file-preview-scroll-vertical", entity_id))
+                            .scrollbar_show(ScrollbarShow::Always),
+                    )
+                    .child(
+                        Scrollbar::horizontal(&self.scroll)
+                            .id(("file-preview-scroll-horizontal", entity_id))
+                            .scrollbar_show(ScrollbarShow::Always),
+                    ),
             )
             .into_any_element()
     }

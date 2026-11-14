@@ -16,6 +16,23 @@ pub enum DockLayout {
 }
 
 impl DockLayout {
+    pub fn add_tab_after(&mut self, anchor: u64, pane: u64) -> bool {
+        match self {
+            Self::Tabs { panes, active } => {
+                if panes.contains(&anchor) {
+                    panes.push(pane);
+                    *active = panes.len() - 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            Self::Split { children, .. } => children
+                .iter_mut()
+                .any(|child| child.add_tab_after(anchor, pane)),
+        }
+    }
+
     pub fn ids(&self, ids: &mut Vec<u64>) {
         match self {
             Self::Split { children, .. } => children.iter().for_each(|child| child.ids(ids)),

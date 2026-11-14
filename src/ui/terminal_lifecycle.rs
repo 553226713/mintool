@@ -38,6 +38,15 @@ impl MintoolApp {
         let Some(workspace) = self.workspaces.get_mut(&project) else {
             return;
         };
+        if workspace.state.files.remove(&pane).is_some() {
+            self.dock_closes.push((project.clone(), pane));
+            self.dock_file_tabs
+                .retain(|(project_id, _, file_id)| project_id != &project || *file_id != pane);
+            self.clear_preview(&project, pane);
+            self.panel_states.retain(|key, _| key == "app-panels");
+            self.changed(cx);
+            return;
+        }
         if workspace.state.layout.close(pane) {
             self.dock_closes.push((project.clone(), pane));
             if workspace.state.focused == pane {
