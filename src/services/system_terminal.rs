@@ -50,7 +50,16 @@ impl SystemTerminal {
                     .args(["-e", shell]);
             }
             "xterm" => {
-                command.args(["-into", &host, "-e", shell]);
+                command.args([
+                    "-fa",
+                    "monospace:lang=zh-cn",
+                    "-fs",
+                    "12",
+                    "-into",
+                    &host,
+                    "-e",
+                    shell,
+                ]);
             }
             "urxvt" => {
                 command

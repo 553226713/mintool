@@ -205,8 +205,28 @@ pub fn handle_request<C: ClientCore>(
 
                 Ok(())
             }
-            CommitData::Both { .. } => {
-                log::warn!("Both commit data is not supported");
+            CommitData::Both {
+                commited,
+                syncronous,
+                ..
+            } => {
+                handler.handle_commit(
+                    client,
+                    input_method_id,
+                    input_context_id,
+                    &xim_ctext::compound_text_to_utf8(&commited).map_err(|error| {
+                        log::warn!("Invalid XIM compound text: {}", error);
+                        ClientError::InvalidReply
+                    })?,
+                )?;
+
+                if syncronous {
+                    client.send_req(Request::SyncReply {
+                        input_method_id,
+                        input_context_id,
+                    })?;
+                }
+
                 Ok(())
             }
         },

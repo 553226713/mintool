@@ -7,6 +7,8 @@ use gpui::*;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::path::PathBuf;
 
+const PANEL_DIVIDER_GUTTER: Pixels = px(4.);
+
 impl crate::app::MintoolApp {
     pub(crate) fn system_terminal(
         &mut self,
@@ -98,6 +100,7 @@ impl SystemTerminalView {
     pub fn poll(&mut self, cx: &mut Context<Self>) {
         if let Some(host) = &mut self.host {
             let _ = host.refresh_children();
+            let _ = host.poll_focus();
         }
         if !self.exited && self.host.as_mut().is_some_and(|host| host.exited()) {
             self.exited = true;
@@ -119,6 +122,13 @@ impl SystemTerminalView {
             return Ok(());
         }
         let bounds = bounds.intersect(&mask);
+        let content_bounds = Bounds::new(
+            bounds.origin,
+            size(
+                (bounds.size.width - PANEL_DIVIDER_GUTTER).max(px(1.)),
+                (bounds.size.height - PANEL_DIVIDER_GUTTER).max(px(1.)),
+            ),
+        );
         if self.host.is_none() {
             let handle = HasWindowHandle::window_handle(window)
                 .map_err(|error| anyhow::anyhow!("无法取得主窗口句柄：{error}"))?;
@@ -136,10 +146,14 @@ impl SystemTerminalView {
         }
         let scale = window.scale_factor();
         self.host.as_mut().unwrap().position(
-            (f32::from(bounds.origin.x) * scale).round() as i16,
-            (f32::from(bounds.origin.y) * scale).round() as i16,
-            (f32::from(bounds.size.width) * scale).round().max(1.) as u16,
-            (f32::from(bounds.size.height) * scale).round().max(1.) as u16,
+            (f32::from(content_bounds.origin.x) * scale).round() as i16,
+            (f32::from(content_bounds.origin.y) * scale).round() as i16,
+            (f32::from(content_bounds.size.width) * scale)
+                .round()
+                .max(1.) as u16,
+            (f32::from(content_bounds.size.height) * scale)
+                .round()
+                .max(1.) as u16,
         )
     }
 }
@@ -163,6 +177,24 @@ impl Render for SystemTerminalView {
                     |_, _, _, _| {},
                 )
                 .size_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .h_full()
+                    .w(px(1.))
+                    .bg(theme::border()),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .h(px(1.))
+                    .w_full()
+                    .bg(theme::border()),
             )
             .when(self.error.is_some() || self.exited, |body| {
                 body.child(

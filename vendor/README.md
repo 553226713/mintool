@@ -12,6 +12,11 @@ The published X11 implementation calls `XCBConnection::setup()` without bringing
 
 The X11 close handler also releases its client-state borrow before invoking window close callbacks. Those callbacks may re-enter the client through `App::quit`; holding the borrow causes a `RefCell already borrowed` panic when closing the last window.
 
+Mintool reconciles `XMODIFIERS` at startup with the XIM servers currently
+advertised by the X11 root window. Desktop sessions can retain an old IBus
+setting after switching to Fcitx5, which otherwise makes GPUI start without an
+input method connection and leaves the terminal in plain keyboard mode.
+
 The fixes are limited to Linux; other platform ABIs are unchanged. Remove the Cargo patch when a published upstream version includes these fixes.
 
 `Cargo.lock` also pins `libc` to `0.2.186`: the fork's transitive `xattr 0.2.3` dependency references the Linux `ENOATTR` alias removed in newer `libc` releases. Use `--locked` for reproducible builds.
@@ -35,6 +40,10 @@ Three Compound Text decode calls in `src/client.rs` used `expect`, making an
 unsupported or malformed input method message terminate the entire app. They
 now log and return `ClientError::InvalidReply`; GPUI handles that error without
 terminating the event loop. Neither patch disables Chinese input or the IME.
+Fcitx5 sends committed candidates as XIM `Both` data (keysym plus text);
+the client now decodes and forwards the text portion instead of discarding the
+commit. This restores Chinese candidate commits when switching from IBus to
+Fcitx5.
 
 ## Dock component and native terminal embedding
 

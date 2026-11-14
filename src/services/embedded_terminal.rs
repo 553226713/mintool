@@ -7,7 +7,9 @@ use std::{
 };
 use x11rb::{
     connection::Connection,
-    protocol::xproto::{ConfigureWindowAux, ConnectionExt, CreateWindowAux, WindowClass},
+    protocol::xproto::{
+        ConfigureWindowAux, ConnectionExt, CreateWindowAux, InputFocus, KeyButMask, WindowClass,
+    },
     rust_connection::RustConnection,
     COPY_DEPTH_FROM_PARENT,
 };
@@ -20,6 +22,7 @@ pub struct EmbeddedTerminal {
     bounds: Option<(i16, i16, u16, u16)>,
     visible: bool,
     children: Vec<u32>,
+    button_down: bool,
 }
 
 impl EmbeddedTerminal {
@@ -72,6 +75,7 @@ impl EmbeddedTerminal {
             bounds: None,
             visible: false,
             children: Vec::new(),
+            button_down: false,
         })
     }
     pub fn position(&mut self, x: i16, y: i16, width: u16, height: u16) -> Result<()> {
@@ -116,6 +120,20 @@ impl EmbeddedTerminal {
         }
         Ok(())
     }
+    pub fn poll_focus(&mut self) -> Result<()> {
+        self.refresh_children()?;
+        let pointer = self.connection.query_pointer(self.host)?.reply()?;
+        let button_down = pointer.mask.contains(KeyButMask::BUTTON1);
+        if button_down && !self.button_down && pointer.child != x11rb::NONE {
+            let target = deepest_child(&self.connection, pointer.child)?;
+            self.connection
+                .set_input_focus(InputFocus::POINTER_ROOT, target, x11rb::CURRENT_TIME)?
+                .check()?;
+            self.connection.flush()?;
+        }
+        self.button_down = button_down;
+        Ok(())
+    }
     pub fn show(&mut self, visible: bool) -> Result<()> {
         if self.visible != visible {
             if visible {
@@ -137,6 +155,17 @@ impl EmbeddedTerminal {
         exited
     }
 }
+
+fn deepest_child(connection: &RustConnection, mut window: u32) -> Result<u32> {
+    loop {
+        let pointer = connection.query_pointer(window)?.reply()?;
+        if pointer.child == x11rb::NONE {
+            return Ok(window);
+        }
+        window = pointer.child;
+    }
+}
+
 impl Drop for EmbeddedTerminal {
     fn drop(&mut self) {
         lock_unpoisoned(&self.processes).shutdown();

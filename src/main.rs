@@ -8,6 +8,7 @@ fn main() -> anyhow::Result<()> {
         println!("Mintool {}", mintool::VERSION);
         return Ok(());
     }
+    mintool::services::ime::configure_x11_ime();
     let storage = Storage::user()?;
     let settings = storage.settings()?;
     let mut projects = storage.projects()?;
