@@ -8,7 +8,61 @@ use crate::{
     ui::{terminal_surface::TerminalSurface, theme},
 };
 use gpui::*;
+use gpui_component::scroll::{Scrollbar, ScrollbarHandle, ScrollbarShow};
 use std::sync::{Arc, Mutex};
+
+pub(crate) const SCROLLBAR_WIDTH: Pixels = px(16.);
+
+#[derive(Clone)]
+struct TerminalScrollbarHandle {
+    session: Arc<Mutex<TerminalSession>>,
+    viewport_height: Pixels,
+    row_height: Pixels,
+}
+
+fn scrollbar_offset(position: usize, scrollback_len: usize, row_height: Pixels) -> Pixels {
+    let rows_from_bottom = scrollback_len.saturating_sub(position.min(scrollback_len));
+    -row_height * rows_from_bottom as f32
+}
+
+fn scrollback_position(offset: Pixels, scrollback_len: usize, row_height: Pixels) -> usize {
+    if row_height <= px(0.) {
+        return 0;
+    }
+    let rows_from_bottom = (f32::from(-offset) / f32::from(row_height))
+        .round()
+        .clamp(0., scrollback_len as f32) as usize;
+    scrollback_len - rows_from_bottom
+}
+
+impl ScrollbarHandle for TerminalScrollbarHandle {
+    fn offset(&self) -> Point<Pixels> {
+        let (position, scrollback_len) = lock_unpoisoned(&self.session).scrollback_position();
+        point(
+            px(0.),
+            scrollbar_offset(position, scrollback_len, self.row_height),
+        )
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        let mut session = lock_unpoisoned(&self.session);
+        let (_, scrollback_len) = session.scrollback_position();
+        session.set_scrollback_position(scrollback_position(
+            offset.y,
+            scrollback_len,
+            self.row_height,
+        ));
+    }
+
+    fn content_size(&self) -> Size<Pixels> {
+        let session = lock_unpoisoned(&self.session);
+        let (_, scrollback_len) = session.scrollback_position();
+        size(
+            px(1.),
+            self.viewport_height + self.row_height * scrollback_len as f32,
+        )
+    }
+}
 
 pub struct TerminalView {
     pub session: Arc<Mutex<TerminalSession>>,
@@ -50,6 +104,16 @@ impl TerminalView {
         }
         self.selection = None;
         cx.notify();
+    }
+    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let bracketed = lock_unpoisoned(&self.session).bracketed_paste();
+        self.send(&terminal_input::paste(&text, bracketed), cx);
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
@@ -195,6 +259,12 @@ impl Focusable for TerminalView {
 }
 impl Render for TerminalView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let scrollbar = TerminalScrollbarHandle {
+            session: self.session.clone(),
+            viewport_height: self.bounds.size.height,
+            row_height: self.cell_size.height,
+        };
+        let entity_id = cx.entity_id();
         div()
             .id("terminal")
             .size_full()
@@ -212,6 +282,17 @@ impl Render for TerminalView {
                     let cell = this.cell_at(event.position);
                     this.selection = Some((cell, cell));
                     cx.notify();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if !this.bounds.contains(&event.position) {
+                        return;
+                    }
+                    this.focus.focus(window);
+                    this.paste_clipboard(cx);
+                    cx.stop_propagation();
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
@@ -239,5 +320,25 @@ impl Render for TerminalView {
                 cx.stop_propagation();
             }))
             .child(TerminalSurface { view: cx.entity() })
+            .child(
+                Scrollbar::vertical(&scrollbar)
+                    .id(("terminal-scrollbar", entity_id))
+                    .scrollbar_show(ScrollbarShow::Always),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{scrollback_position, scrollbar_offset};
+    use gpui::px;
+
+    #[test]
+    fn scrollbar_maps_live_view_to_bottom_and_history_to_top() {
+        let row_height = px(20.);
+        assert_eq!(scrollbar_offset(0, 100, row_height), px(-2000.));
+        assert_eq!(scrollbar_offset(100, 100, row_height), px(0.));
+        assert_eq!(scrollback_position(px(-2000.), 100, row_height), 0);
+        assert_eq!(scrollback_position(px(0.), 100, row_height), 100);
     }
 }

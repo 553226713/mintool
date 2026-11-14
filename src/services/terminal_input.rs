@@ -44,6 +44,7 @@ pub fn key(key: &str, modifiers: KeyModifiers, application_cursor: bool) -> Opti
         });
     }
     let bytes = match key {
+        "enter" if modifiers.shift => "\n",
         "enter" => "\r",
         "backspace" => "\x7f",
         "escape" => "\x1b",

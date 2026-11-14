@@ -1,8 +1,21 @@
 use crate::{
     services::mutex::lock_unpoisoned,
-    ui::{terminal::TerminalView, theme},
+    ui::{
+        terminal::{TerminalView, SCROLLBAR_WIDTH},
+        theme,
+    },
 };
 use gpui::*;
+
+fn terminal_content_bounds(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+    Bounds::new(
+        bounds.origin,
+        size(
+            (bounds.size.width - SCROLLBAR_WIDTH).max(px(1.)),
+            bounds.size.height,
+        ),
+    )
+}
 
 pub struct TerminalSurface {
     pub view: Entity<TerminalView>,
@@ -45,6 +58,7 @@ impl Element for TerminalSurface {
     ) {
         let font = font("JetBrains Mono");
         let font_id = window.text_system().resolve_font(&font);
+        let bounds = terminal_content_bounds(bounds);
         self.view.update(cx, |view, _| {
             let width = window
                 .text_system()
@@ -71,6 +85,7 @@ impl Element for TerminalSurface {
         cx: &mut App,
     ) {
         let view = self.view.read(cx);
+        let bounds = terminal_content_bounds(bounds);
         let focus = view.focus.clone();
         let session = lock_unpoisoned(&view.session);
         let screen = lock_unpoisoned(&session.parser).screen().clone();

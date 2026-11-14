@@ -142,6 +142,18 @@ impl TerminalSession {
     pub fn application_cursor(&self) -> bool {
         lock_unpoisoned(&self.parser).screen().application_cursor()
     }
+    pub fn scrollback_position(&self) -> (usize, usize) {
+        let parser = lock_unpoisoned(&self.parser);
+        (
+            parser.screen().scrollback(),
+            parser.screen().scrollback_len(),
+        )
+    }
+    pub fn set_scrollback_position(&mut self, position: usize) {
+        lock_unpoisoned(&self.parser)
+            .screen_mut()
+            .set_scrollback(position);
+    }
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         let rows = NonZeroU16::new(rows.max(1)).context("终端行数为零")?;
         let cols = NonZeroU16::new(cols.max(2)).context("终端列数为零")?;
@@ -158,11 +170,8 @@ impl TerminalSession {
         Ok(())
     }
     pub fn scroll(&mut self, lines: i32) {
-        let mut parser = lock_unpoisoned(&self.parser);
-        let offset = parser.screen().scrollback() as i32;
-        parser
-            .screen_mut()
-            .set_scrollback((offset + lines).max(0) as usize);
+        let (position, _) = self.scrollback_position();
+        self.set_scrollback_position((position as i32 + lines).max(0) as usize);
     }
 }
 impl Drop for TerminalSession {

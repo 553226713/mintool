@@ -217,6 +217,18 @@ fn terminal_paste_and_cursor_modes_are_encoded() {
         .unwrap(),
         vec![3]
     );
+    assert_eq!(
+        key(
+            "enter",
+            KeyModifiers {
+                shift: true,
+                ..Default::default()
+            },
+            false
+        )
+        .unwrap(),
+        b"\n"
+    );
 }
 
 #[test]
