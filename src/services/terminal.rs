@@ -2,13 +2,20 @@ use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::{
     io::{Read, Write},
+    num::NonZeroU16,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
     },
     thread,
 };
+
+pub fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 pub struct TerminalSession {
     pub parser: Arc<Mutex<vt100::Parser>>,
@@ -47,7 +54,9 @@ impl TerminalSession {
         let mut reader = pair.master.try_clone_reader()?;
         let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
         let thread_writer = writer.clone();
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(24, 80, 5000)));
+        let rows = NonZeroU16::new(size.rows).context("终端行数为零")?;
+        let cols = NonZeroU16::new(size.cols).context("终端列数为零")?;
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 5000)));
         let thread_parser = parser.clone();
         let exited = Arc::new(Mutex::new(false));
         let thread_exited = exited.clone();
@@ -99,44 +108,46 @@ impl TerminalSession {
         })
     }
     pub fn send(&mut self, data: &[u8]) -> Result<()> {
-        self.parser.lock().unwrap().set_scrollback(0);
-        let mut writer = self.writer.lock().unwrap();
+        lock_unpoisoned(&self.parser).screen_mut().set_scrollback(0);
+        let mut writer = lock_unpoisoned(&self.writer);
         writer.write_all(data)?;
         writer.flush()?;
         Ok(())
     }
     pub fn poll_processes(&mut self) {
-        self.processes.lock().unwrap().poll();
+        lock_unpoisoned(&self.processes).poll();
         if self.child.try_wait().ok().flatten().is_some() {
-            self.processes.lock().unwrap().shutdown();
-            *self.exited.lock().unwrap() = true;
+            lock_unpoisoned(&self.processes).shutdown();
+            *lock_unpoisoned(&self.exited) = true;
         }
     }
     pub fn shutdown(&mut self) {
-        self.processes.lock().unwrap().shutdown();
+        lock_unpoisoned(&self.processes).shutdown();
         let _ = self.child.kill();
         let _ = self.child.wait();
-        *self.exited.lock().unwrap() = true;
+        *lock_unpoisoned(&self.exited) = true;
     }
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
-        let rows = rows.max(1);
-        let cols = cols.max(2);
-        if self.size != (rows, cols) {
+        let rows = NonZeroU16::new(rows.max(1)).context("终端行数为零")?;
+        let cols = NonZeroU16::new(cols.max(2)).context("终端列数为零")?;
+        if self.size != (rows.get(), cols.get()) {
             self.master.resize(PtySize {
-                rows,
-                cols,
+                rows: rows.get(),
+                cols: cols.get(),
                 pixel_width: 0,
                 pixel_height: 0,
             })?;
-            self.parser.lock().unwrap().set_size(rows, cols);
-            self.size = (rows, cols);
+            lock_unpoisoned(&self.parser).set_size(rows, cols);
+            self.size = (rows.get(), cols.get());
         }
         Ok(())
     }
     pub fn scroll(&mut self, lines: i32) {
-        let mut parser = self.parser.lock().unwrap();
+        let mut parser = lock_unpoisoned(&self.parser);
         let offset = parser.screen().scrollback() as i32;
-        parser.set_scrollback((offset + lines).max(0) as usize);
+        parser
+            .screen_mut()
+            .set_scrollback((offset + lines).max(0) as usize);
     }
 }
 impl Drop for TerminalSession {

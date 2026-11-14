@@ -189,7 +189,8 @@ fn real_pty_isolates_working_directories_keeps_processes_and_resizes() {
 }
 #[test]
 fn terminal_paste_and_cursor_modes_are_encoded() {
-    let mut parser = vt100::Parser::new(24, 80, 0);
+    let mut parser =
+        vt100::Parser::new(vt100::Parser::DEFAULT_ROWS, vt100::Parser::DEFAULT_COLS, 0);
     parser.process(b"\x1b[?2004h\x1b[?1h");
     assert_eq!(
         paste("hello\n世界", parser.screen().bracketed_paste()),
@@ -216,6 +217,18 @@ fn terminal_paste_and_cursor_modes_are_encoded() {
         .unwrap(),
         vec![3]
     );
+}
+
+#[test]
+fn terminal_resize_truncating_wide_character_does_not_panic() {
+    let mut parser =
+        vt100::Parser::new(vt100::Parser::DEFAULT_ROWS, vt100::Parser::DEFAULT_COLS, 0);
+    parser.process("你".as_bytes());
+    parser.set_size(
+        std::num::NonZeroU16::new(2).unwrap(),
+        std::num::NonZeroU16::new(1).unwrap(),
+    );
+    parser.process(b"\x1b[K");
 }
 
 #[test]

@@ -1,11 +1,11 @@
-use crate::app::MintoolApp;
+use crate::{app::MintoolApp, services::terminal::lock_unpoisoned};
 use gpui::*;
 
 impl MintoolApp {
     pub(crate) fn stop_terminal(&mut self, project: &str, id: u64, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspaces.get_mut(project) {
             if let Some(session) = workspace.terminals.remove(&id) {
-                session.lock().unwrap().shutdown();
+                lock_unpoisoned(&session).shutdown();
             }
             workspace.errors.remove(&id);
         }

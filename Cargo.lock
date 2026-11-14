@@ -3649,7 +3649,7 @@ dependencies = [
  "toml 0.8.23",
  "uuid",
  "vt100",
- "vte",
+ "vte 0.11.1",
  "x11rb",
  "xim-ctext",
 ]
@@ -6854,14 +6854,13 @@ dependencies = [
 
 [[package]]
 name = "vt100"
-version = "0.15.2"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84cd863bf0db7e392ba3bd04994be3473491b31e66340672af5d11943c6274de"
+checksum = "eb05cdd19ae8707bf6a0a269972c07e6358103a7079faec749dec318a5b3dc23"
 dependencies = [
  "itoa",
- "log",
- "unicode-width 0.1.14",
- "vte",
+ "unicode-width 0.2.3",
+ "vte 0.15.0",
 ]
 
 [[package]]
@@ -6873,6 +6872,16 @@ dependencies = [
  "arrayvec",
  "utf8parse",
  "vte_generate_state_changes",
+]
+
+[[package]]
+name = "vte"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
+dependencies = [
+ "arrayvec",
+ "memchr",
 ]
 
 [[package]]

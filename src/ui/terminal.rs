@@ -1,6 +1,6 @@
 use crate::{
     services::{
-        terminal::TerminalSession,
+        terminal::{lock_unpoisoned, TerminalSession},
         terminal_clipboard::TerminalClipboard,
         terminal_input::{self, KeyModifiers},
     },
@@ -43,7 +43,7 @@ impl TerminalView {
         }
     }
     pub fn send(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
-        let result = self.session.lock().unwrap().send(bytes);
+        let result = lock_unpoisoned(&self.session).send(bytes);
         if let Err(error) = result {
             self.error = Some(error.to_string());
         }
@@ -90,13 +90,7 @@ impl TerminalView {
                     item.text()
                 };
                 if let Some(text) = text {
-                    let bracketed = self
-                        .session
-                        .lock()
-                        .unwrap()
-                        .parser
-                        .lock()
-                        .unwrap()
+                    let bracketed = lock_unpoisoned(&lock_unpoisoned(&self.session).parser)
                         .screen()
                         .bracketed_paste();
                     self.send(&terminal_input::paste(&text, bracketed), cx);
@@ -112,13 +106,7 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
-        let application = self
-            .session
-            .lock()
-            .unwrap()
-            .parser
-            .lock()
-            .unwrap()
+        let application = lock_unpoisoned(&lock_unpoisoned(&self.session).parser)
             .screen()
             .application_cursor();
         let encoded = terminal_input::key(
@@ -144,7 +132,7 @@ impl TerminalView {
         let _ = window;
     }
     fn cell_at(&self, point: Point<Pixels>) -> (u16, u16) {
-        let size = self.session.lock().unwrap().size;
+        let size = lock_unpoisoned(&self.session).size;
         let col = ((point.x - self.bounds.origin.x) / self.cell_size.width).max(0.) as u16;
         let row = ((point.y - self.bounds.origin.y) / self.cell_size.height).max(0.) as u16;
         (
@@ -170,8 +158,8 @@ impl TerminalView {
         cx.notify();
     }
     pub fn selected_text(&self) -> String {
-        let session = self.session.lock().unwrap();
-        let parser = session.parser.lock().unwrap();
+        let session = lock_unpoisoned(&self.session);
+        let parser = lock_unpoisoned(&session.parser);
         let screen = parser.screen();
         let Some((start, end)) = self.selection else {
             return screen.contents();
@@ -248,9 +236,7 @@ impl Render for TerminalView {
             )
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
                 let y = event.delta.pixel_delta(px(this.font_size * 1.5)).y;
-                this.session
-                    .lock()
-                    .unwrap()
+                lock_unpoisoned(&this.session)
                     .scroll((f32::from(y) / this.font_size / 1.5).round() as i32);
                 cx.notify();
                 cx.stop_propagation();

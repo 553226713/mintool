@@ -1,4 +1,7 @@
-use crate::ui::{terminal::TerminalView, theme};
+use crate::{
+    services::terminal::lock_unpoisoned,
+    ui::{terminal::TerminalView, theme},
+};
 use gpui::*;
 
 pub struct TerminalSurface {
@@ -52,7 +55,7 @@ impl Element for TerminalSurface {
             view.cell_size = size(width, height);
             let rows = (bounds.size.height / height).floor().max(1.) as u16;
             let cols = (bounds.size.width / width).floor().max(2.) as u16;
-            if let Err(error) = view.session.lock().unwrap().resize(rows, cols) {
+            if let Err(error) = lock_unpoisoned(&view.session).resize(rows, cols) {
                 view.error = Some(error.to_string());
             }
         });
@@ -69,8 +72,8 @@ impl Element for TerminalSurface {
     ) {
         let view = self.view.read(cx);
         let focus = view.focus.clone();
-        let session = view.session.lock().unwrap();
-        let screen = session.parser.lock().unwrap().screen().clone();
+        let session = lock_unpoisoned(&view.session);
+        let screen = lock_unpoisoned(&session.parser).screen().clone();
         let (rows, cols) = session.size;
         let cell_size = view.cell_size;
         let font_size = px(view.font_size);
@@ -113,7 +116,7 @@ impl Element for TerminalSurface {
                             bg,
                         ));
                     }
-                    let text = cell.contents();
+                    let text = cell.contents().to_string();
                     if text.is_empty() || text == " " {
                         continue;
                     }
