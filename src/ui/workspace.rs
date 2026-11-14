@@ -5,6 +5,7 @@ use crate::{
         layout::{Axis, Layout, Pane},
         project::Project,
     },
+    services::mutex::lock_unpoisoned,
     ui::theme,
 };
 use adabraka_ui::components::{
@@ -232,14 +233,11 @@ impl MintoolApp {
                     focus.focus(window);
                     self.focus_pending = false;
                 }
-                let exited = *terminal
-                    .read(cx)
-                    .session
-                    .lock()
-                    .unwrap()
-                    .exited
-                    .lock()
-                    .unwrap();
+                let exited = {
+                    let terminal = terminal.read(cx);
+                    let session = lock_unpoisoned(&terminal.session);
+                    session.has_exited()
+                };
                 let project_id = project.id.clone();
                 div()
                     .size_full()

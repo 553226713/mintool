@@ -1,4 +1,4 @@
-use crate::{app::MintoolApp, services::terminal::lock_unpoisoned};
+use crate::{app::MintoolApp, services::mutex::lock_unpoisoned};
 use gpui::*;
 
 impl MintoolApp {

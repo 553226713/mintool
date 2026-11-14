@@ -1,5 +1,5 @@
 use crate::{
-    services::terminal::lock_unpoisoned,
+    services::mutex::lock_unpoisoned,
     ui::{terminal::TerminalView, theme},
 };
 use gpui::*;

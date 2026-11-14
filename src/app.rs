@@ -7,7 +7,8 @@ use crate::{
         settings::Settings,
     },
     services::{
-        git::GitMonitor, storage::Storage, terminal::TerminalSession, workspace::Workspace,
+        git::GitMonitor, mutex::lock_unpoisoned, storage::Storage, terminal::TerminalSession,
+        workspace::Workspace,
     },
     ui::{dialogs::Dialog, terminal::TerminalView, theme},
 };
@@ -157,14 +158,12 @@ impl MintoolApp {
             terminal.update(cx, |view, cx| view.poll(cx));
         }
         for terminal in self.terminals.values() {
-            terminal.read(cx).session.lock().unwrap().poll_processes();
-            let dirty = terminal
-                .read(cx)
-                .session
-                .lock()
-                .unwrap()
-                .dirty
-                .swap(false, Ordering::Relaxed);
+            let dirty = {
+                let terminal = terminal.read(cx);
+                let mut session = lock_unpoisoned(&terminal.session);
+                session.poll_processes();
+                session.dirty.swap(false, Ordering::Relaxed)
+            };
             if dirty {
                 terminal.update(cx, |_, cx| cx.notify());
             }

@@ -1,6 +1,7 @@
 use crate::{
     services::{
-        terminal::{lock_unpoisoned, TerminalSession},
+        mutex::lock_unpoisoned,
+        terminal::TerminalSession,
         terminal_clipboard::TerminalClipboard,
         terminal_input::{self, KeyModifiers},
     },
@@ -90,9 +91,7 @@ impl TerminalView {
                     item.text()
                 };
                 if let Some(text) = text {
-                    let bracketed = lock_unpoisoned(&lock_unpoisoned(&self.session).parser)
-                        .screen()
-                        .bracketed_paste();
+                    let bracketed = lock_unpoisoned(&self.session).bracketed_paste();
                     self.send(&terminal_input::paste(&text, bracketed), cx);
                 }
             } else if !modifiers.shift {
@@ -106,9 +105,7 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
-        let application = lock_unpoisoned(&lock_unpoisoned(&self.session).parser)
-            .screen()
-            .application_cursor();
+        let application = lock_unpoisoned(&self.session).application_cursor();
         let encoded = terminal_input::key(
             key,
             KeyModifiers {
@@ -182,7 +179,7 @@ impl TerminalView {
                 if let Some(cell) = screen.cell(row, col) {
                     if !cell.is_wide_continuation() {
                         let s = cell.contents();
-                        line.push_str(if s.is_empty() { " " } else { &s });
+                        line.push_str(if s.is_empty() { " " } else { s });
                     }
                 }
             }

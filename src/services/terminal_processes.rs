@@ -1,3 +1,4 @@
+use super::mutex::lock_unpoisoned;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -46,7 +47,7 @@ impl TerminalProcesses {
             processes.add(process);
         }
         let processes = Arc::new(Mutex::new(processes));
-        let mut registry = REGISTRY.get_or_init(Default::default).lock().unwrap();
+        let mut registry = lock_unpoisoned(REGISTRY.get_or_init(Default::default));
         registry.retain(|processes| processes.strong_count() > 0);
         registry.push(Arc::downgrade(&processes));
         processes
@@ -109,7 +110,9 @@ impl TerminalProcesses {
             }
         }
         for pid in owned {
-            self.add(processes[&pid]);
+            if let Some(&process) = processes.get(&pid) {
+                self.add(process);
+            }
         }
     }
 
@@ -155,16 +158,14 @@ impl TerminalProcesses {
 
     /// Called before the application entity store is destroyed, in one grace period.
     pub fn shutdown_all() {
-        let processes: Vec<_> = REGISTRY
-            .get_or_init(Default::default)
-            .lock()
-            .unwrap()
+        let registry = REGISTRY.get_or_init(Default::default);
+        let processes: Vec<_> = lock_unpoisoned(registry)
             .iter()
             .filter_map(Weak::upgrade)
             .collect();
         let mut active = Vec::new();
         for processes in processes {
-            let mut guard = processes.lock().unwrap();
+            let mut guard = lock_unpoisoned(&processes);
             if !guard.closed {
                 guard.signal(libc::SIGTERM);
                 active.push(processes.clone());
@@ -174,7 +175,7 @@ impl TerminalProcesses {
             thread::sleep(Duration::from_millis(150));
         }
         for processes in active {
-            let mut guard = processes.lock().unwrap();
+            let mut guard = lock_unpoisoned(&processes);
             guard.signal(libc::SIGKILL);
             guard.closed = true;
         }
@@ -182,7 +183,7 @@ impl TerminalProcesses {
 }
 
 fn snapshot(fresh: bool) -> HashMap<u32, Process> {
-    let mut cache = SNAPSHOT.get_or_init(Default::default).lock().unwrap();
+    let mut cache = lock_unpoisoned(SNAPSHOT.get_or_init(Default::default));
     if !fresh {
         if let Some((time, processes)) = cache.as_ref() {
             if time.elapsed() < Duration::from_millis(250) {

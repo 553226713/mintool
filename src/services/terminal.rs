@@ -1,20 +1,29 @@
+use super::mutex::lock_unpoisoned;
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::{
     io::{Read, Write},
     num::NonZeroU16,
+    panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex,
     },
     thread,
 };
 
-pub fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+const SCROLLBACK_LINES: usize = 5000;
+
+fn process_parser_byte(parser: &mut vt100::Parser, byte: u8) {
+    if catch_unwind(AssertUnwindSafe(|| {
+        parser.process(std::slice::from_ref(&byte));
+    }))
+    .is_err()
+    {
+        let (rows, cols) = parser.screen().size();
+        *parser = vt100::Parser::new(rows, cols, SCROLLBACK_LINES);
+    }
 }
 
 pub struct TerminalSession {
@@ -24,7 +33,7 @@ pub struct TerminalSession {
     child: Box<dyn Child + Send + Sync>,
     processes: Arc<Mutex<super::terminal_processes::TerminalProcesses>>,
     pub size: (u16, u16),
-    pub exited: Arc<Mutex<bool>>,
+    exited: Arc<AtomicBool>,
     pub dirty: Arc<AtomicBool>,
 }
 impl TerminalSession {
@@ -56,9 +65,9 @@ impl TerminalSession {
         let thread_writer = writer.clone();
         let rows = NonZeroU16::new(size.rows).context("终端行数为零")?;
         let cols = NonZeroU16::new(size.cols).context("终端列数为零")?;
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 5000)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)));
         let thread_parser = parser.clone();
-        let exited = Arc::new(Mutex::new(false));
+        let exited = Arc::new(AtomicBool::new(false));
         let thread_exited = exited.clone();
         let dirty = Arc::new(AtomicBool::new(true));
         let thread_dirty = dirty.clone();
@@ -73,27 +82,24 @@ impl TerminalSession {
                 match reader.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
                     Ok(count) => {
-                        if let Ok(mut parser) = thread_parser.lock() {
-                            for byte in &buffer[..count] {
-                                parser.process(std::slice::from_ref(byte));
-                                queries.cursor = parser.screen().cursor_position();
-                                query_parser.advance(&mut queries, *byte);
-                            }
+                        let mut parser = lock_unpoisoned(&thread_parser);
+                        for byte in &buffer[..count] {
+                            process_parser_byte(&mut parser, *byte);
+                            queries.cursor = parser.screen().cursor_position();
+                            query_parser.advance(&mut queries, *byte);
                         }
+                        drop(parser);
                         if !queries.replies.is_empty() {
-                            if let Ok(mut writer) = thread_writer.lock() {
-                                let _ = writer.write_all(&queries.replies);
-                                let _ = writer.flush();
-                            }
+                            let mut writer = lock_unpoisoned(&thread_writer);
+                            let _ = writer.write_all(&queries.replies);
+                            let _ = writer.flush();
                             queries.replies.clear();
                         }
                         thread_dirty.store(true, Ordering::Relaxed);
                     }
                 }
             }
-            if let Ok(mut exited) = thread_exited.lock() {
-                *exited = true;
-            }
+            thread_exited.store(true, Ordering::Relaxed);
             thread_dirty.store(true, Ordering::Relaxed);
         });
         Ok(Self {
@@ -118,14 +124,23 @@ impl TerminalSession {
         lock_unpoisoned(&self.processes).poll();
         if self.child.try_wait().ok().flatten().is_some() {
             lock_unpoisoned(&self.processes).shutdown();
-            *lock_unpoisoned(&self.exited) = true;
+            self.exited.store(true, Ordering::Relaxed);
         }
     }
     pub fn shutdown(&mut self) {
         lock_unpoisoned(&self.processes).shutdown();
         let _ = self.child.kill();
         let _ = self.child.wait();
-        *lock_unpoisoned(&self.exited) = true;
+        self.exited.store(true, Ordering::Relaxed);
+    }
+    pub fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::Relaxed)
+    }
+    pub fn bracketed_paste(&self) -> bool {
+        lock_unpoisoned(&self.parser).screen().bracketed_paste()
+    }
+    pub fn application_cursor(&self) -> bool {
+        lock_unpoisoned(&self.parser).screen().application_cursor()
     }
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         let rows = NonZeroU16::new(rows.max(1)).context("终端行数为零")?;

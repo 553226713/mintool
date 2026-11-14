@@ -1,4 +1,4 @@
-use super::system_terminal::SystemTerminal;
+use super::{mutex::lock_unpoisoned, system_terminal::SystemTerminal};
 use anyhow::{Context, Result};
 use std::{
     path::Path,
@@ -129,17 +129,17 @@ impl EmbeddedTerminal {
         Ok(())
     }
     pub fn exited(&mut self) -> bool {
-        self.processes.lock().unwrap().poll();
+        lock_unpoisoned(&self.processes).poll();
         let exited = self.process.try_wait().ok().flatten().is_some();
         if exited {
-            self.processes.lock().unwrap().shutdown();
+            lock_unpoisoned(&self.processes).shutdown();
         }
         exited
     }
 }
 impl Drop for EmbeddedTerminal {
     fn drop(&mut self) {
-        self.processes.lock().unwrap().shutdown();
+        lock_unpoisoned(&self.processes).shutdown();
         let _ = self.process.kill();
         let _ = self.process.wait();
         let _ = self.connection.destroy_window(self.host);

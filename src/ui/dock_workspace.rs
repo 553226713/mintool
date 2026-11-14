@@ -5,6 +5,7 @@ use crate::{
         layout::{Axis, Layout},
         project::Project,
     },
+    services::mutex::lock_unpoisoned,
     ui::dock_pane::DockPane,
 };
 use gpui::*;
@@ -185,7 +186,7 @@ impl MintoolApp {
                     .get_mut(&key)
                     .and_then(|workspace| workspace.terminals.remove(&id))
                 {
-                    session.lock().unwrap().shutdown();
+                    lock_unpoisoned(&session).shutdown();
                 }
                 self.terminals.remove(&(key.clone(), id));
                 if let Some(terminal) = self.system_terminals.remove(&(key.clone(), id)) {

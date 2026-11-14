@@ -6,6 +6,7 @@ pub mod file_changes;
 pub mod file_monitor;
 pub mod files;
 pub mod git;
+pub mod mutex;
 pub mod storage;
 pub mod system_terminal;
 pub mod terminal;
