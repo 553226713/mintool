@@ -187,6 +187,27 @@ fn real_pty_isolates_working_directories_keeps_processes_and_resizes() {
     first.send(b"printf 'INTERRUPTED_%s\\n' OK\r").unwrap();
     wait_for(&first, "INTERRUPTED_OK");
 }
+
+#[test]
+fn real_pty_survives_resizing_while_streaming_wide_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TerminalSession::spawn(dir.path(), "/bin/bash").unwrap();
+    session
+        .send(
+            "i=0; while [ $i -lt 160 ]; do printf '宽字符 ABC\\n'; i=$((i+1)); done; printf 'RESIZE_STREAM_OK\\n'\r"
+                .as_bytes(),
+        )
+        .unwrap();
+    thread::sleep(Duration::from_millis(20));
+    let sizes = [(1, 2), (24, 80), (3, 19), (40, 121), (7, 33), (30, 99)];
+    for iteration in 0..30 {
+        let (rows, cols) = sizes[iteration % sizes.len()];
+        session.resize(rows, cols).unwrap();
+        thread::sleep(Duration::from_millis(2));
+    }
+    wait_for(&session, "RESIZE_STREAM_OK");
+}
+
 #[test]
 fn terminal_paste_and_cursor_modes_are_encoded() {
     let mut parser =

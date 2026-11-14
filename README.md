@@ -1,6 +1,6 @@
 # Mintool
 
-当前版本：**v0.2.0**。软件顶部及窗口标题显示版本；`mintool --version` 可查询安装版本。
+当前版本：**v0.2.1**。软件顶部及窗口标题显示版本；`mintool --version` 可查询安装版本。
 
 以终端为核心的 Rust 桌面项目工作台。第一版面向 Linux，采用 [Adabraka UI 0.3.9](https://github.com/Augani/adabraka-ui) 原生界面、[GPUI Component 0.5.1](https://crates.io/crates/gpui-component/0.5.1) Dock、portable-pty 和 VT100 终端解析，无需 WebView。
 
@@ -38,7 +38,7 @@ sudo apt install clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev \
 
 安装脚本构建锁定依赖的 release 版本，将程序安装到 `~/.local/bin/mintool`，并注册应用菜单和图标。可从应用菜单搜索 **Mintool** 启动；如果 `~/.local/bin` 已在 PATH 中，也可以直接运行 `mintool`。重复执行可更新安装，保留 `~/.mintool/` 中的项目、布局和设置。
 
-`v0.2.0` 新增 Dock 标签组与自由分屏、终端进程生命周期清理、系统终端嵌入和终端图片粘贴，并保留独立项目终端、Git 变更定位、原生文件事件同步、资源树操作及深浅主题切换。
+`v0.2.1` 新增 Dock 标签组与自由分屏、终端滚动条、终端进程生命周期清理、系统终端嵌入和终端图片粘贴，并修复终端输出期间缩放导致的解析崩溃。
 
 ## Debian / Ubuntu 安装包
 
@@ -46,7 +46,7 @@ sudo apt install clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev \
 ./package-deb.sh
 ```
 
-产物为 `dist/mintool_0.2.0-1_amd64.deb`（架构随构建机变化），同时生成 SHA-256 校验文件。构建依赖 `dpkg-dev` 和 `desktop-file-utils`；安装包声明程序的运行依赖，并包含 PNG/SVG 图标、系统应用菜单入口和图标缓存更新脚本。当前包在 Ubuntu 26.04 amd64 上构建，其他发行版需要满足包内的动态库版本要求。
+产物为 `dist/mintool_0.2.1-1_amd64.deb`（架构随构建机变化），同时生成 SHA-256 校验文件。构建依赖 `dpkg-dev` 和 `desktop-file-utils`；安装包声明程序的运行依赖，并包含 PNG/SVG 图标、系统应用菜单入口和图标缓存更新脚本。当前包在 Ubuntu 26.04 amd64 上构建，其他发行版需要满足包内的动态库版本要求。
 
 如果之前运行过 `install.sh`，先把旧的用户安装移到备份目录，避免它优先于安装包的程序及桌面入口：
 
@@ -54,7 +54,7 @@ sudo apt install clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev \
 mkdir -p ~/.local/share/mintool-local-backup
 [ ! -f ~/.local/share/applications/mintool.desktop ] || mv ~/.local/share/applications/mintool.desktop ~/.local/share/mintool-local-backup/
 [ ! -f ~/.local/bin/mintool ] || mv ~/.local/bin/mintool ~/.local/share/mintool-local-backup/
-sudo apt install ./dist/mintool_0.2.0-1_amd64.deb
+sudo apt install ./dist/mintool_0.2.1-1_amd64.deb
 ```
 
 之后从应用菜单搜索 **Mintool**，或运行 `/usr/bin/mintool`。包管理器负责升级与卸载；用户项目、布局和主题设置仍保存在 `~/.mintool/`，不由安装脚本修改。
