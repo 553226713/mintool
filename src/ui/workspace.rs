@@ -351,46 +351,60 @@ impl MintoolApp {
         let Some(path) = &pane.file else {
             return div().into_any_element();
         };
-        let text = match self
-            .workspaces
-            .get_mut(&project.id)
-            .unwrap()
-            .cache
-            .document(path)
-        {
-            Ok(text) => text.to_string(),
-            Err(error) => {
-                return div()
-                    .p_4()
-                    .text_color(theme::danger())
-                    .child(error.to_string())
-                    .into_any_element()
+        let key = (project.id.clone(), pane.id);
+        let text_changed = {
+            let cache = &mut self.workspaces.get_mut(&project.id).unwrap().cache;
+            match cache.document_fast(path) {
+                Ok(text) => self
+                    .previews
+                    .get(&key)
+                    .is_none_or(|(old_path, old_text, _)| old_path != path || old_text != text),
+                Err(error) => {
+                    return div()
+                        .p_4()
+                        .text_color(theme::danger())
+                        .child(error.to_string())
+                        .into_any_element()
+                }
             }
         };
+        if text_changed {
+            let text = self
+                .workspaces
+                .get_mut(&project.id)
+                .unwrap()
+                .cache
+                .cached_document(path)
+                .unwrap()
+                .to_string();
+            if self
+                .previews
+                .get(&key)
+                .is_some_and(|(old_path, _, _)| old_path == path)
+            {
+                let (_, old_text, state) = self.previews.get_mut(&key).unwrap();
+                state.update(cx, |state, cx| state.replace(text.clone(), cx));
+                *old_text = text;
+            } else {
+                let state = cx.new(|cx| FilePreview::new(text.clone(), height, cx));
+                self.previews
+                    .insert(key.clone(), (path.clone(), text, state));
+            }
+        }
         let changes = self
             .workspaces
             .get(&project.id)
             .and_then(|w| w.git.lines.get(path))
-            .cloned()
-            .unwrap_or_default();
-        let key = (project.id.clone(), pane.id);
-        if self
-            .previews
-            .get(&key)
-            .is_none_or(|(old_path, _, _)| old_path != path)
-        {
-            let state = cx.new(|cx| FilePreview::new(text.clone(), height, cx));
-            self.previews
-                .insert(key.clone(), (path.clone(), text.clone(), state));
-        }
-        let (_, old_text, state) = self.previews.get_mut(&key).unwrap();
-        if *old_text != text {
-            state.update(cx, |state, cx| state.replace(text.clone(), cx));
-            *old_text = text;
-        }
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let changes_changed = !self.previews[&key].2.read(cx).changes_equal(changes);
+        let changes = changes_changed.then(|| changes.to_vec());
+        let (_, _, state) = self.previews.get_mut(&key).unwrap();
         state.update(cx, |state, cx| {
             state.resize(height, cx);
-            state.set_changes(changes, cx);
+            if let Some(changes) = changes {
+                state.set_changes(changes, cx);
+            }
         });
         let _ = window;
         state.clone().into_any_element()

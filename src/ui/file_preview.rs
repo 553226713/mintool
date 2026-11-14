@@ -10,7 +10,7 @@ use gpui::*;
 pub struct FilePreview {
     text: String,
     height: f32,
-    lines: Vec<String>,
+    lines: Vec<SharedString>,
     focus: FocusHandle,
     selection: Option<(usize, usize)>,
     selecting: bool,
@@ -21,7 +21,10 @@ pub struct FilePreview {
 impl FilePreview {
     pub fn new(text: String, height: f32, cx: &mut Context<Self>) -> Self {
         Self {
-            lines: text.split('\n').map(str::to_string).collect(),
+            lines: text
+                .split('\n')
+                .map(|line| SharedString::from(line.to_string()))
+                .collect(),
             text,
             height,
             focus: cx.focus_handle(),
@@ -39,7 +42,10 @@ impl FilePreview {
         }
     }
     pub fn replace(&mut self, text: String, cx: &mut Context<Self>) {
-        self.lines = text.split('\n').map(str::to_string).collect();
+        self.lines = text
+            .split('\n')
+            .map(|line| SharedString::from(line.to_string()))
+            .collect();
         self.text = text;
         self.selection = None;
         cx.notify();
@@ -56,6 +62,9 @@ impl FilePreview {
         }
         cx.notify();
     }
+    pub fn changes_equal(&self, changes: &[LineChange]) -> bool {
+        self.changes == changes
+    }
     fn jump_change(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.changes.is_empty() {
             return;
@@ -70,7 +79,11 @@ impl FilePreview {
     }
     fn copy(&self, cx: &mut App) {
         let text = if let Some((a, b)) = self.selection {
-            self.lines[a.min(b)..=a.max(b)].join("\n")
+            self.lines[a.min(b)..=a.max(b)]
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<&str>>()
+                .join("\n")
         } else {
             self.text.clone()
         };
@@ -88,10 +101,11 @@ impl Render for FilePreview {
                         let selected = this
                             .selection
                             .is_some_and(|(a, b)| index >= a.min(b) && index <= a.max(b));
-                        let change = this.changes.iter().find(|change| {
-                            index >= change.start.min(this.lines.len().saturating_sub(1))
-                                && index < change.start.saturating_add(change.count)
-                        });
+                        let position = this.changes.partition_point(|change| change.start <= index);
+                        let change = position
+                            .checked_sub(1)
+                            .and_then(|position| this.changes.get(position))
+                            .filter(|change| index < change.start.saturating_add(change.count));
                         let marker = change.map(|change| match change.kind {
                             ChangeKind::Added => theme::success(),
                             ChangeKind::Modified => theme::warning(),

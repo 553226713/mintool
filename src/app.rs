@@ -29,7 +29,7 @@ use adabraka_ui::navigation::menu::MenuItem;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{atomic::Ordering, Arc, Mutex},
     time::{Duration, Instant},
@@ -44,6 +44,7 @@ pub struct MintoolApp {
     pub(crate) settings: Settings,
     pub(crate) projects: ProjectRegistry,
     pub(crate) workspaces: HashMap<String, Workspace>,
+    dirty_workspaces: HashSet<String>,
     pub(crate) terminals: HashMap<(String, u64), Entity<TerminalView>>,
     pub(crate) system_terminals:
         HashMap<(String, u64), Entity<crate::ui::system_terminal::SystemTerminalView>>,
@@ -112,6 +113,7 @@ impl MintoolApp {
             settings,
             projects,
             workspaces: HashMap::new(),
+            dirty_workspaces: HashSet::new(),
             terminals: HashMap::new(),
             system_terminals: HashMap::new(),
             terminal_select,
@@ -142,6 +144,9 @@ impl MintoolApp {
         }
     }
     pub(crate) fn changed(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = &self.projects.selected {
+            self.dirty_workspaces.insert(id.clone());
+        }
         self.dirty = Some(Instant::now());
         cx.notify();
     }
@@ -208,9 +213,18 @@ impl MintoolApp {
     }
     fn save(&mut self) -> anyhow::Result<()> {
         self.storage.save(&self.settings, &self.projects)?;
-        for (id, workspace) in &self.workspaces {
-            self.storage
-                .write(&self.storage.workspace_path(id)?, &workspace.state)?;
+        let dirty: Vec<_> = self.dirty_workspaces.drain().collect();
+        for id in dirty {
+            let Some(workspace) = self.workspaces.get(&id) else {
+                continue;
+            };
+            if let Err(error) = self
+                .storage
+                .write(&self.storage.workspace_path(&id)?, &workspace.state)
+            {
+                self.dirty_workspaces.insert(id);
+                return Err(error);
+            }
         }
         self.dirty = None;
         Ok(())
@@ -301,6 +315,12 @@ impl MintoolApp {
         Ok(())
     }
     pub(crate) fn select_project(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.projects.selected.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        if let Some(previous) = self.projects.selected.replace(id.clone()) {
+            self.dirty_workspaces.insert(previous);
+        }
         let group = self
             .projects
             .projects
@@ -315,9 +335,9 @@ impl MintoolApp {
         {
             group.collapsed = false;
         }
-        self.projects.selected = Some(id);
         self.focus_pending = true;
-        self.changed(cx);
+        self.dirty = Some(Instant::now());
+        cx.notify();
     }
     pub(crate) fn remove_project(&mut self, id: &str, cx: &mut Context<Self>) {
         self.stop_project_terminals(id, cx);

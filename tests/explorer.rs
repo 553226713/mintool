@@ -97,6 +97,8 @@ fn file_actions_preserve_existing_files_and_refresh_cached_directories() {
     fs::remove_file(copy).unwrap();
     cache.invalidate();
     let entries = cache.entries(&root).unwrap();
+    let repeated = cache.entries(&root).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&entries, &repeated));
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "b.rs");
 }

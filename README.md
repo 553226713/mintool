@@ -38,7 +38,7 @@ sudo apt install clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev \
 
 安装脚本构建锁定依赖的 release 版本，将程序安装到 `~/.local/bin/mintool`，并注册应用菜单和图标。可从应用菜单搜索 **Mintool** 启动；如果 `~/.local/bin` 已在 PATH 中，也可以直接运行 `mintool`。重复执行可更新安装，保留 `~/.mintool/` 中的项目、布局和设置。
 
-`v0.2.1` 新增 Dock 标签组与自由分屏、终端滚动条、终端进程生命周期清理、系统终端嵌入和终端图片粘贴，并修复终端输出期间缩放导致的解析崩溃。
+`v0.2.1` 新增 Dock 标签组与自由分屏、终端滚动条、终端进程生命周期清理、系统终端嵌入和终端图片粘贴；修复终端输出期间缩放导致的解析崩溃，并优化项目切换与文件预览的重复 I/O 和大对象复制。
 
 ## Debian / Ubuntu 安装包
 

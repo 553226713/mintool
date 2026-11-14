@@ -44,13 +44,12 @@ impl MintoolApp {
         for project in self
             .projects
             .projects
-            .clone()
-            .into_iter()
+            .iter()
             .filter(|p| p.group.is_none() && p.name.to_lowercase().contains(&filter))
         {
-            rows.push(self.project_row(&project, cx));
+            rows.push(self.project_row(project, cx));
         }
-        for group in self.projects.groups.clone() {
+        for group in &self.projects.groups {
             let id = group.id.clone();
             let toggle = id.clone();
             let drop_id = id.clone();
@@ -89,7 +88,7 @@ impl MintoolApp {
                             .text_size(px(11.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::muted())
-                            .child(group.name),
+                            .child(group.name.clone()),
                     )
                     .child(
                         div().text_size(px(10.)).text_color(theme::muted()).child(
@@ -127,10 +126,10 @@ impl MintoolApp {
                     .into_any_element(),
             );
             if !group.collapsed || !filter.is_empty() {
-                for project in self.projects.projects.clone().into_iter().filter(|p| {
+                for project in self.projects.projects.iter().filter(|p| {
                     p.group.as_ref() == Some(&id) && p.name.to_lowercase().contains(&filter)
                 }) {
-                    rows.push(self.project_row(&project, cx));
+                    rows.push(self.project_row(project, cx));
                 }
             }
         }

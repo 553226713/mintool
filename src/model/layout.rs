@@ -74,6 +74,12 @@ impl Layout {
             Self::Split { first, second, .. } => first.find_mut(id).or_else(|| second.find_mut(id)),
         }
     }
+    pub fn find(&self, id: u64) -> Option<&Pane> {
+        match self {
+            Self::Pane(p) => (p.id == id).then_some(p),
+            Self::Split { first, second, .. } => first.find(id).or_else(|| second.find(id)),
+        }
+    }
     pub fn split(&mut self, id: u64, new_id: u64, axis: Axis) -> bool {
         match self {
             Self::Pane(p) if p.id == id => {

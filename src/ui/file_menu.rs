@@ -31,9 +31,13 @@ impl MintoolApp {
                 }
                 let mut ids = Vec::new();
                 workspace.state.layout.ids(&mut ids);
-                let mut layout = workspace.state.layout.clone();
                 for id in ids {
-                    if let Some(file) = layout.find_mut(id).and_then(|pane| pane.file.as_ref()) {
+                    if let Some(file) = workspace
+                        .state
+                        .layout
+                        .find(id)
+                        .and_then(|pane| pane.file.as_ref())
+                    {
                         if let Some(parent) = file.parent() {
                             paths.insert(parent.to_path_buf());
                         }

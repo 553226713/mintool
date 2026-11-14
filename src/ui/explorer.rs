@@ -219,7 +219,7 @@ impl MintoolApp {
                 return;
             }
         };
-        for entry in entries {
+        for entry in entries.iter() {
             let workspace = self.workspaces.get(project_id).unwrap();
             let expanded = workspace.state.expanded.contains(&entry.path);
             let status = workspace.git.status(&entry.path).map(str::to_string);
