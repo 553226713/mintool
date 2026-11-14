@@ -193,6 +193,7 @@ impl MintoolApp {
                     terminal.update(cx, |view, _| view.stop());
                 }
                 self.previews.remove(&(key.clone(), id));
+                self.image_previews.remove(&(key.clone(), id));
                 if let Some(workspace) = self.workspaces.get_mut(&key) {
                     workspace.state.layout.close(id);
                     workspace.terminals.remove(&id);

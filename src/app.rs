@@ -1,5 +1,6 @@
 use crate::services::file_monitor::FileMonitor;
 use crate::ui::file_preview::FilePreview;
+use crate::ui::image_preview::ImagePreview;
 use crate::{
     model::{
         layout::Axis,
@@ -50,6 +51,7 @@ pub struct MintoolApp {
         HashMap<(String, u64), Entity<crate::ui::system_terminal::SystemTerminalView>>,
     pub(crate) terminal_select: Entity<Select<String>>,
     pub(crate) previews: HashMap<(String, u64), (PathBuf, String, Entity<FilePreview>)>,
+    pub(crate) image_previews: HashMap<(String, u64), (PathBuf, Entity<ImagePreview>)>,
     pub(crate) panel_states: HashMap<String, (Entity<ResizableState>, Subscription)>,
     pub(crate) docks: HashMap<String, crate::ui::dock_workspace::DockWorkspace>,
     pub(crate) dock_splits: Vec<(String, u64, u64, Axis)>,
@@ -118,6 +120,7 @@ impl MintoolApp {
             system_terminals: HashMap::new(),
             terminal_select,
             previews: HashMap::new(),
+            image_previews: HashMap::new(),
             panel_states: HashMap::new(),
             docks: HashMap::new(),
             dock_splits: Vec::new(),
@@ -162,12 +165,17 @@ impl MintoolApp {
         for terminal in self.system_terminals.values() {
             terminal.update(cx, |view, cx| view.poll(cx));
         }
-        for terminal in self.terminals.values() {
+        let selected_project = self.projects.selected.as_deref();
+        for ((project, _), terminal) in &self.terminals {
             let dirty = {
                 let terminal = terminal.read(cx);
                 let mut session = lock_unpoisoned(&terminal.session);
                 session.poll_processes();
-                session.dirty.swap(false, Ordering::Relaxed)
+                if selected_project == Some(project.as_str()) {
+                    session.dirty.swap(false, Ordering::Relaxed)
+                } else {
+                    false
+                }
             };
             if dirty {
                 terminal.update(cx, |_, cx| cx.notify());
@@ -186,8 +194,15 @@ impl MintoolApp {
             }
         }
         if let Some(events) = self.file_monitor.poll() {
-            if let Some(id) = &self.projects.selected {
-                if let Some(workspace) = self.workspaces.get_mut(id) {
+            if let Some(id) = self.projects.selected.clone() {
+                if events.rescan || !events.paths.is_empty() {
+                    self.image_previews.retain(|(project, _), (path, _)| {
+                        project != &id
+                            || !(events.rescan
+                                || events.paths.iter().any(|changed| path.starts_with(changed)))
+                    });
+                }
+                if let Some(workspace) = self.workspaces.get_mut(&id) {
                     if events.rescan {
                         workspace.cache.invalidate();
                     } else {
@@ -319,7 +334,14 @@ impl MintoolApp {
             return;
         }
         if let Some(previous) = self.projects.selected.replace(id.clone()) {
-            self.dirty_workspaces.insert(previous);
+            self.dirty_workspaces.insert(previous.clone());
+            self.previews.retain(|(project, _), _| project != &previous);
+            self.image_previews
+                .retain(|(project, _), _| project != &previous);
+            if let Some(workspace) = self.workspaces.get_mut(&previous) {
+                workspace.cache.invalidate();
+                workspace.git = crate::services::git::GitSnapshot::default();
+            }
         }
         let group = self
             .projects
@@ -345,6 +367,7 @@ impl MintoolApp {
         self.system_terminals
             .retain(|(project, _), _| project != id);
         self.previews.retain(|(project, _), _| project != id);
+        self.image_previews.retain(|(project, _), _| project != id);
         self.workspaces.remove(id);
         self.docks.remove(id);
         self.dock_splits.retain(|(project, ..)| project != id);
@@ -354,10 +377,12 @@ impl MintoolApp {
         self.changed(cx);
     }
     pub(crate) fn open_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if let Some(id) = self.projects.selected.as_ref() {
-            if let Some(w) = self.workspaces.get_mut(id) {
+        if let Some(id) = self.projects.selected.clone() {
+            if let Some(focused) = self.workspaces.get(&id).map(|w| w.state.focused) {
+                self.clear_preview(&id, focused);
+            }
+            if let Some(w) = self.workspaces.get_mut(&id) {
                 if let Some(p) = w.state.layout.find_mut(w.state.focused) {
-                    self.previews.remove(&(id.clone(), w.state.focused));
                     p.file = Some(path);
                     p.showing_file = true;
                 }

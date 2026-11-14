@@ -2,6 +2,11 @@ use crate::{app::MintoolApp, services::mutex::lock_unpoisoned};
 use gpui::*;
 
 impl MintoolApp {
+    pub(crate) fn clear_preview(&mut self, project: &str, id: u64) {
+        self.previews.remove(&(project.to_string(), id));
+        self.image_previews.remove(&(project.to_string(), id));
+    }
+
     pub(crate) fn stop_terminal(&mut self, project: &str, id: u64, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspaces.get_mut(project) {
             if let Some(session) = workspace.terminals.remove(&id) {
@@ -13,7 +18,7 @@ impl MintoolApp {
         if let Some(terminal) = self.system_terminals.remove(&(project.to_string(), id)) {
             terminal.update(cx, |view, _| view.stop());
         }
-        self.previews.remove(&(project.to_string(), id));
+        self.clear_preview(project, id);
     }
 
     pub(crate) fn stop_project_terminals(&mut self, project: &str, cx: &mut Context<Self>) {

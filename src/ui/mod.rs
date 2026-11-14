@@ -10,6 +10,7 @@ pub mod file_icon;
 pub mod file_menu;
 pub mod file_preview;
 pub mod group_menu;
+pub mod image_preview;
 pub mod navigation;
 pub mod project_menu;
 pub mod resize;

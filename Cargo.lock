@@ -3639,6 +3639,7 @@ dependencies = [
  "anyhow",
  "gpui-component",
  "gpui-component-assets",
+ "image",
  "libc",
  "notify 8.2.2",
  "portable-pty",

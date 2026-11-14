@@ -139,7 +139,7 @@ impl MintoolApp {
                 move |this, _, cx| {
                     if let Some(project) = this.current() {
                         if let Some(w) = this.workspaces.get(&project.id) {
-                            this.previews.remove(&(project.id, w.state.focused));
+                            this.clear_preview(&project.id, w.state.focused);
                         }
                     }
                     this.open_file(file.clone(), cx);

@@ -13,7 +13,7 @@ use std::{
     thread,
 };
 
-const SCROLLBACK_LINES: usize = 5000;
+const SCROLLBACK_LINES: usize = 2000;
 
 fn process_parser_byte(parser: &mut vt100::Parser, byte: u8) {
     if catch_unwind(AssertUnwindSafe(|| {

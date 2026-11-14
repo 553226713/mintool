@@ -1,4 +1,7 @@
-use crate::ui::file_preview::FilePreview;
+use crate::ui::{
+    file_preview::FilePreview,
+    image_preview::{is_image_path, ImagePreview},
+};
 use crate::{
     app::MintoolApp,
     model::{
@@ -352,6 +355,11 @@ impl MintoolApp {
             return div().into_any_element();
         };
         let key = (project.id.clone(), pane.id);
+        if is_image_path(path) {
+            self.previews.remove(&key);
+            return self.image_preview(path, key, height, cx);
+        }
+        self.image_previews.remove(&key);
         let text_changed = {
             let cache = &mut self.workspaces.get_mut(&project.id).unwrap().cache;
             match cache.document_fast(path) {
@@ -386,7 +394,7 @@ impl MintoolApp {
                 state.update(cx, |state, cx| state.replace(text.clone(), cx));
                 *old_text = text;
             } else {
-                let state = cx.new(|cx| FilePreview::new(text.clone(), height, cx));
+                let state = cx.new(|cx| FilePreview::new(path.clone(), text.clone(), height, cx));
                 self.previews
                     .insert(key.clone(), (path.clone(), text, state));
             }
@@ -408,5 +416,27 @@ impl MintoolApp {
         });
         let _ = window;
         state.clone().into_any_element()
+    }
+
+    fn image_preview(
+        &mut self,
+        path: &std::path::Path,
+        key: (String, u64),
+        height: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self
+            .image_previews
+            .get(&key)
+            .is_some_and(|(old_path, _)| old_path == path)
+        {
+            let state = self.image_previews[&key].1.clone();
+            state.update(cx, |state, cx| state.resize(height, cx));
+            return state.into_any_element();
+        }
+        let state = cx.new(|cx| ImagePreview::new(path.to_path_buf(), height, cx));
+        self.image_previews
+            .insert(key, (path.to_path_buf(), state.clone()));
+        state.into_any_element()
     }
 }

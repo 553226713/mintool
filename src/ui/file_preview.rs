@@ -5,9 +5,31 @@ use adabraka_ui::components::{
     text::Text,
 };
 use gpui::*;
+use gpui_component::text::TextView;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RichKind {
+    Markdown,
+    Html,
+}
+
+fn rich_kind(path: &Path) -> Option<RichKind> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "md" | "markdown" | "mdown" | "mkd" => Some(RichKind::Markdown),
+        "html" | "htm" => Some(RichKind::Html),
+        _ => None,
+    }
+}
 
 /// Read-only, virtualized file viewer. Selection and scrolling never modify disk content.
 pub struct FilePreview {
+    path: PathBuf,
     text: String,
     height: f32,
     lines: Vec<SharedString>,
@@ -17,10 +39,14 @@ pub struct FilePreview {
     changes: Vec<LineChange>,
     active_change: usize,
     scroll: UniformListScrollHandle,
+    rich_kind: Option<RichKind>,
+    rendered: bool,
 }
 impl FilePreview {
-    pub fn new(text: String, height: f32, cx: &mut Context<Self>) -> Self {
+    pub fn new(path: PathBuf, text: String, height: f32, cx: &mut Context<Self>) -> Self {
+        let rich_kind = rich_kind(&path);
         Self {
+            path,
             lines: text
                 .split('\n')
                 .map(|line| SharedString::from(line.to_string()))
@@ -33,6 +59,8 @@ impl FilePreview {
             changes: Vec::new(),
             active_change: 0,
             scroll: UniformListScrollHandle::new(),
+            rich_kind,
+            rendered: false,
         }
     }
     pub fn resize(&mut self, height: f32, cx: &mut Context<Self>) {
@@ -91,7 +119,72 @@ impl FilePreview {
     }
 }
 impl Render for FilePreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.rendered {
+            if let Some(kind) = self.rich_kind {
+                let text_view = match kind {
+                    RichKind::Markdown => TextView::markdown(
+                        ("markdown-preview", cx.entity_id()),
+                        self.text.clone(),
+                        window,
+                        cx,
+                    ),
+                    RichKind::Html => TextView::html(
+                        ("html-preview", cx.entity_id()),
+                        self.text.clone(),
+                        window,
+                        cx,
+                    ),
+                }
+                .selectable(true)
+                .scrollable(true)
+                .size_full();
+                return div()
+                    .id("rich-file-preview")
+                    .w_full()
+                    .h(px(self.height))
+                    .flex_none()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(33.))
+                            .px_3()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .text_size(px(10.))
+                            .text_color(theme::muted())
+                            .border_b_1()
+                            .border_color(theme::border())
+                            .child(div().flex_1().min_w_0().truncate().child(format!(
+                                "{} · {}",
+                                kind_label(kind),
+                                self.path.file_name().unwrap_or_default().to_string_lossy()
+                            )))
+                            .child(
+                                Button::new("source-preview", "源码")
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(ButtonSize::Sm)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.rendered = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h(px((self.height - 33.).max(1.)))
+                            .w_full()
+                            .min_h_0()
+                            .p_4()
+                            .child(text_view),
+                    )
+                    .into_any_element();
+            }
+        }
         let rows = uniform_list(
             "source-lines",
             self.lines.len(),
@@ -225,6 +318,16 @@ impl Render for FilePreview {
                         self.lines.len()
                     )))
                     .child(
+                        Button::new("rendered-preview", "预览")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .disabled(self.rich_kind.is_none())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.rendered = true;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
                         Button::new("previous-change", "↑ 变更")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
@@ -254,5 +357,13 @@ impl Render for FilePreview {
                     .w_full()
                     .child(rows),
             )
+            .into_any_element()
+    }
+}
+
+fn kind_label(kind: RichKind) -> &'static str {
+    match kind {
+        RichKind::Markdown => "Markdown 预览",
+        RichKind::Html => "HTML 预览",
     }
 }
