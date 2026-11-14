@@ -18,6 +18,8 @@ version="${version#Mintool }"
 package_version="$version-1"
 architecture="$(dpkg-architecture -qDEB_HOST_ARCH)"
 mkdir -p "$output_dir"
+find "$output_dir" -maxdepth 1 -type f \
+    \( -name 'mintool_*.deb' -o -name 'mintool_*.deb.sha256' \) -delete
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
 stage="$work_dir/package"

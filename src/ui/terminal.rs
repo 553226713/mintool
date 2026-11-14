@@ -1,6 +1,7 @@
 use crate::{
     services::{
         terminal::TerminalSession,
+        terminal_clipboard::TerminalClipboard,
         terminal_input::{self, KeyModifiers},
     },
     ui::{terminal_surface::TerminalSurface, theme},
@@ -19,6 +20,7 @@ pub struct TerminalView {
     pub selecting: bool,
     pub cell_size: Size<Pixels>,
     pub error: Option<String>,
+    clipboard: TerminalClipboard,
 }
 impl TerminalView {
     pub fn new(
@@ -37,6 +39,7 @@ impl TerminalView {
             selecting: false,
             cell_size: size(px(8.), px(20.)),
             error: None,
+            clipboard: TerminalClipboard::default(),
         }
     }
     pub fn send(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
@@ -51,17 +54,55 @@ impl TerminalView {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
         if modifiers.control && key == "v" {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                let bracketed = self
-                    .session
-                    .lock()
-                    .unwrap()
-                    .parser
-                    .lock()
-                    .unwrap()
-                    .screen()
-                    .bracketed_paste();
-                self.send(&terminal_input::paste(&text, bracketed), cx);
+            if let Some(item) = cx.read_from_clipboard() {
+                let text = if let Some(image) = item.entries().iter().find_map(|entry| {
+                    if let ClipboardEntry::Image(image) = entry {
+                        Some(image)
+                    } else {
+                        None
+                    }
+                }) {
+                    // Image-aware terminal programs handle Ctrl+V themselves.
+                    // Ctrl+Shift+V explicitly inserts an image file path instead.
+                    if !modifiers.shift {
+                        self.send(&[0x16], cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    let extension = match image.format {
+                        ImageFormat::Png => "png",
+                        ImageFormat::Jpeg => "jpg",
+                        ImageFormat::Webp => "webp",
+                        ImageFormat::Gif => "gif",
+                        ImageFormat::Svg => "svg",
+                        ImageFormat::Bmp => "bmp",
+                        ImageFormat::Tiff => "tiff",
+                    };
+                    match self.clipboard.save_image(extension, &image.bytes) {
+                        Ok(path) => Some(TerminalClipboard::quote_path(&path)),
+                        Err(error) => {
+                            self.error = Some(format!("{error:#}"));
+                            cx.notify();
+                            None
+                        }
+                    }
+                } else {
+                    item.text()
+                };
+                if let Some(text) = text {
+                    let bracketed = self
+                        .session
+                        .lock()
+                        .unwrap()
+                        .parser
+                        .lock()
+                        .unwrap()
+                        .screen()
+                        .bracketed_paste();
+                    self.send(&terminal_input::paste(&text, bracketed), cx);
+                }
+            } else if !modifiers.shift {
+                self.send(&[0x16], cx);
             }
             cx.stop_propagation();
             return;

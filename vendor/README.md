@@ -35,3 +35,22 @@ Three Compound Text decode calls in `src/client.rs` used `expect`, making an
 unsupported or malformed input method message terminate the entire app. They
 now log and return `ClientError::InvalidReply`; GPUI handles that error without
 terminating the event loop. Neither patch disables Chinese input or the IME.
+
+## Dock component and native terminal embedding
+
+`gpui-component/` and `gpui-component-assets/` are the published 0.5.1
+crates from https://github.com/longbridge/gpui-component, with their
+Apache-2.0 license retained. Dependencies are bound to the existing Adabraka
+GPUI fork so panel entities share one type system and event loop. Local changes
+are listed in [gpui-component/MINTOOL-PATCHES.md](gpui-component/MINTOOL-PATCHES.md).
+The application's terminal/file content implements the library's `Panel` trait;
+tab drag/drop, edge docking, group splitting and divider dragging remain library
+behavior. The initial center always has a split parent, as required by the
+library's `TabPanel::split_panel` implementation.
+
+`adabraka-gpui/src/platform/linux/x11/window.rs` now implements the public
+`HasWindowHandle` and `HasDisplayHandle` methods, which were upstream
+`unimplemented!()` stubs. They borrow the existing live XCB window and connection
+instead of creating new handles. This is required for hosting an external
+terminal's child window. Wayland retains its existing handles and the application
+falls back to the built-in terminal in automatic mode.

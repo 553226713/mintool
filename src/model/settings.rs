@@ -7,6 +7,7 @@ pub struct Settings {
     pub font_size: f32,
     pub appearance: Appearance,
     pub shell: String,
+    pub terminal_backend: String,
     pub left_width: f32,
     pub right_width: f32,
 }
@@ -28,6 +29,7 @@ impl Default for Settings {
             font_size: 14.0,
             appearance: Appearance::default(),
             shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into()),
+            terminal_backend: "auto".into(),
             left_width: 210.0,
             right_width: 270.0,
         }

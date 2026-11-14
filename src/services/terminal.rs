@@ -15,6 +15,7 @@ pub struct TerminalSession {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
+    processes: Arc<Mutex<super::terminal_processes::TerminalProcesses>>,
     pub size: (u16, u16),
     pub exited: Arc<Mutex<bool>>,
     pub dirty: Arc<AtomicBool>,
@@ -29,6 +30,8 @@ impl TerminalSession {
         };
         let pair = native_pty_system().openpty(size)?;
         let mut command = CommandBuilder::new(shell);
+        let owner = uuid::Uuid::new_v4();
+        command.env("MINTOOL_TERMINAL_ID", owner.to_string());
         command.cwd(path);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
@@ -36,6 +39,10 @@ impl TerminalSession {
             .slave
             .spawn_command(command)
             .context("无法启动 Shell")?;
+        let processes = super::terminal_processes::TerminalProcesses::track(
+            child.process_id().context("无法取得终端进程 ID")?,
+            owner,
+        );
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader()?;
         let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
@@ -85,6 +92,7 @@ impl TerminalSession {
             writer,
             master: pair.master,
             child,
+            processes,
             size: (24, 80),
             exited,
             dirty,
@@ -96,6 +104,19 @@ impl TerminalSession {
         writer.write_all(data)?;
         writer.flush()?;
         Ok(())
+    }
+    pub fn poll_processes(&mut self) {
+        self.processes.lock().unwrap().poll();
+        if self.child.try_wait().ok().flatten().is_some() {
+            self.processes.lock().unwrap().shutdown();
+            *self.exited.lock().unwrap() = true;
+        }
+    }
+    pub fn shutdown(&mut self) {
+        self.processes.lock().unwrap().shutdown();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        *self.exited.lock().unwrap() = true;
     }
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         let rows = rows.max(1);
@@ -120,7 +141,6 @@ impl TerminalSession {
 }
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.shutdown();
     }
 }

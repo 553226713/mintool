@@ -316,12 +316,22 @@ impl rwh::HasDisplayHandle for RawWindow {
 
 impl rwh::HasWindowHandle for X11Window {
     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
-        unimplemented!()
+        let window = NonZeroU32::new(self.0.x_window).ok_or(rwh::HandleError::Unavailable)?;
+        let handle = rwh::XcbWindowHandle::new(window);
+        // The window and connection are owned by self for the borrowed lifetime.
+        Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
     }
 }
 impl rwh::HasDisplayHandle for X11Window {
     fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-        unimplemented!()
+        let connection = as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(self.0.xcb.as_ref());
+        let connection = NonNull::new(connection).ok_or(rwh::HandleError::Unavailable)?;
+        let root = self.0.state.borrow().x_root_window;
+        let screen = self.0.xcb.setup().roots.iter().position(|screen| screen.root == root)
+            .ok_or(rwh::HandleError::Unavailable)?;
+        let handle = rwh::XcbDisplayHandle::new(Some(connection.cast()), screen as i32);
+        // self retains the XCB connection for the borrowed lifetime.
+        Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
     }
 }
 

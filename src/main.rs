@@ -25,6 +25,7 @@ fn main() -> anyhow::Result<()> {
         .with_assets(mintool::ui::assets::Assets)
         .run(move |cx| {
             adabraka_ui::init(cx);
+            gpui_component::init(cx);
             adabraka_ui::set_icon_base_path("icons");
             theme::install(cx, settings.appearance);
             cx.on_window_closed(|cx| {
@@ -47,7 +48,8 @@ fn main() -> anyhow::Result<()> {
             let window = cx
                 .open_window(options, |window, cx| {
                     window.set_window_title(&format!("Mintool {}", mintool::VERSION));
-                    cx.new(|cx| MintoolApp::new(storage, settings, projects, cx))
+                    let app = cx.new(|cx| MintoolApp::new(storage, settings, projects, cx));
+                    cx.new(|cx| gpui_component::Root::new(app, window, cx))
                 })
                 .expect("无法打开 Mintool 窗口");
             // X11 window managers may ignore maximize requests before mapping.

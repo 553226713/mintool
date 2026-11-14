@@ -64,6 +64,15 @@ pub fn warning() -> Hsla {
     color(0xe1bd85, 0x8a5b0f)
 }
 pub fn install(cx: &mut App, appearance: Appearance) {
+    gpui_component::Theme::change(
+        if appearance == Appearance::Light {
+            gpui_component::ThemeMode::Light
+        } else {
+            gpui_component::ThemeMode::Dark
+        },
+        None,
+        cx,
+    );
     LIGHT.store(appearance == Appearance::Light, Ordering::Relaxed);
     let mut theme = if is_light() {
         Theme::light()

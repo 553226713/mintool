@@ -44,8 +44,14 @@ pub struct MintoolApp {
     pub(crate) projects: ProjectRegistry,
     pub(crate) workspaces: HashMap<String, Workspace>,
     pub(crate) terminals: HashMap<(String, u64), Entity<TerminalView>>,
+    pub(crate) system_terminals:
+        HashMap<(String, u64), Entity<crate::ui::system_terminal::SystemTerminalView>>,
+    pub(crate) terminal_select: Entity<Select<String>>,
     pub(crate) previews: HashMap<(String, u64), (PathBuf, String, Entity<FilePreview>)>,
     pub(crate) panel_states: HashMap<String, (Entity<ResizableState>, Subscription)>,
+    pub(crate) docks: HashMap<String, crate::ui::dock_workspace::DockWorkspace>,
+    pub(crate) dock_splits: Vec<(String, u64, u64, Axis)>,
+    pub(crate) dock_closes: Vec<(String, u64)>,
     viewport_size: Option<Size<Pixels>>,
     pub(crate) menu: Option<(Point<Pixels>, Vec<MenuItem>)>,
     monitor: GitMonitor,
@@ -78,6 +84,7 @@ impl MintoolApp {
         let dialog_input = cx.new(InputState::new);
         let font_input = cx.new(InputState::new);
         let group_select = cx.new(Select::new);
+        let terminal_select = cx.new(Select::new);
         let subscription = cx.subscribe(&search, |_, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -105,8 +112,13 @@ impl MintoolApp {
             projects,
             workspaces: HashMap::new(),
             terminals: HashMap::new(),
+            system_terminals: HashMap::new(),
+            terminal_select,
             previews: HashMap::new(),
             panel_states: HashMap::new(),
+            docks: HashMap::new(),
+            dock_splits: Vec::new(),
+            dock_closes: Vec::new(),
             viewport_size: None,
             menu: None,
             monitor: GitMonitor::default(),
@@ -140,7 +152,12 @@ impl MintoolApp {
             .cloned()
     }
     fn tick(&mut self, cx: &mut Context<Self>) {
+        self.sync_docks(cx);
+        for terminal in self.system_terminals.values() {
+            terminal.update(cx, |view, cx| view.poll(cx));
+        }
         for terminal in self.terminals.values() {
+            terminal.read(cx).session.lock().unwrap().poll_processes();
             let dirty = terminal
                 .read(cx)
                 .session
@@ -255,9 +272,13 @@ impl MintoolApp {
                     .any(|p| p.id != id && p.path == path),
                 "这个目录已添加为另一个项目"
             );
+            self.stop_project_terminals(&id, cx);
             if let Some(project) = self.projects.projects.iter_mut().find(|p| p.id == id) {
                 let old = std::mem::replace(&mut project.path, path.clone());
                 self.terminals.retain(|(project, _), _| project != &id);
+                self.system_terminals
+                    .retain(|(project, _), _| project != &id);
+                self.docks.remove(&id);
                 if let Some(workspace) = self.workspaces.get_mut(&id) {
                     workspace.relocate(&old, &path);
                 }
@@ -300,9 +321,15 @@ impl MintoolApp {
         self.changed(cx);
     }
     pub(crate) fn remove_project(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.stop_project_terminals(id, cx);
         self.terminals.retain(|(project, _), _| project != id);
+        self.system_terminals
+            .retain(|(project, _), _| project != id);
         self.previews.retain(|(project, _), _| project != id);
         self.workspaces.remove(id);
+        self.docks.remove(id);
+        self.dock_splits.retain(|(project, ..)| project != id);
+        self.dock_closes.retain(|(project, ..)| project != id);
         self.projects.remove(id);
         self.focus_pending = true;
         self.changed(cx);
@@ -324,24 +351,11 @@ impl MintoolApp {
             if let Some(w) = self.workspaces.get_mut(id) {
                 let next = w.state.next_id;
                 if w.state.layout.split(pane, next, axis) {
+                    self.dock_splits.push((id.clone(), pane, next, axis));
+                    self.panel_states.retain(|key, _| key == "app-panels");
                     w.state.next_id += 1;
                     w.state.focused = next;
                     self.focus_pending = true;
-                }
-            }
-        }
-        self.changed(cx);
-    }
-    pub(crate) fn close_pane(&mut self, pane: u64, cx: &mut Context<Self>) {
-        if let Some(id) = self.projects.selected.as_ref() {
-            if let Some(w) = self.workspaces.get_mut(id) {
-                if w.state.layout.close(pane) {
-                    w.terminals.remove(&pane);
-                    w.errors.remove(&pane);
-                    self.terminals.remove(&(id.clone(), pane));
-                    if w.state.focused == pane {
-                        w.state.focused = w.state.layout.first_id();
-                    }
                 }
             }
         }
@@ -495,6 +509,11 @@ impl MintoolApp {
             .child(format!(
                 "{} 个终端",
                 workspace.map_or(0, |w| w.terminals.len())
+                    + self
+                        .system_terminals
+                        .keys()
+                        .filter(|(id, _)| project.as_ref().is_some_and(|project| &project.id == id))
+                        .count()
             ))
             .child("UTF-8")
             .child("Adabraka UI")
@@ -506,6 +525,7 @@ impl MintoolApp {
 }
 impl Drop for MintoolApp {
     fn drop(&mut self) {
+        crate::services::terminal_processes::TerminalProcesses::shutdown_all();
         if let Err(error) = self.save() {
             eprintln!("配置保存失败：{error:#}");
         }
@@ -513,6 +533,38 @@ impl Drop for MintoolApp {
 }
 impl Render for MintoolApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let overlays = self.dialog.is_some()
+            || self.menu.is_some()
+            || self.directory_picker.is_some()
+            || cx.has_active_drag();
+        for ((project, id), terminal) in &self.system_terminals {
+            let selected = self.projects.selected.as_ref() == Some(project);
+            let active = self
+                .docks
+                .get(project)
+                .and_then(|dock| dock.panels.get(id))
+                .is_some_and(|panel| {
+                    panel
+                        .read(cx)
+                        .group
+                        .as_ref()
+                        .and_then(|group| group.upgrade())
+                        .and_then(|group| group.read(cx).active_panel(cx))
+                        .is_some_and(|active| active.panel_id(cx) == panel.entity_id())
+                });
+            let showing_terminal = self
+                .workspaces
+                .get_mut(project)
+                .and_then(|workspace| workspace.state.layout.find_mut(*id))
+                .is_some_and(|pane| !pane.showing_file);
+            terminal.update(cx, |view, cx| {
+                let allowed = !overlays && selected && active && showing_terminal;
+                if view.allowed != allowed {
+                    view.set_allowed(allowed);
+                    cx.notify();
+                }
+            });
+        }
         if let Some(result) = self.pending_directory.take() {
             if result.generation == self.dialog_generation && self.dialog.is_some() {
                 self.dialog_input.update(cx, |state, cx| {

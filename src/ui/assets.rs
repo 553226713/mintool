@@ -63,7 +63,7 @@ impl AssetSource for Assets {
             }
             "icons/sun.svg" => include_bytes!("../../assets/icons/sun.svg").as_slice(),
             "icons/moon.svg" => include_bytes!("../../assets/icons/moon.svg").as_slice(),
-            _ => return Ok(None),
+            _ => return gpui_component_assets::Assets.load(path),
         };
         Ok(Some(Cow::Borrowed(bytes)))
     }

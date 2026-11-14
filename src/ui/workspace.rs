@@ -7,7 +7,6 @@ use crate::{
     },
     ui::theme,
 };
-use adabraka_ui::components::resizable::{h_resizable, resizable_panel, v_resizable};
 use adabraka_ui::components::{
     button::{Button, ButtonSize, ButtonVariant},
     icon::Icon,
@@ -23,76 +22,9 @@ impl MintoolApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let viewport = window.viewport_size();
-        let (left_width, right_width) = self.settings.panel_widths(viewport.width.into());
-        let width = f32::from(viewport.width) - left_width - right_width;
-        let height = f32::from(viewport.height) - 91.;
-        div()
-            .size_full()
-            .child(self.layout_node(project, layout, (width, height), window, cx))
-            .into_any_element()
+        self.render_dock(project, layout, window, cx)
     }
-    fn layout_node(
-        &mut self,
-        project: &Project,
-        layout: &Layout,
-        bounds: (f32, f32),
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        match layout {
-            Layout::Pane(pane) => self.render_pane(project, pane, bounds, window, cx),
-            Layout::Split {
-                axis,
-                ratio,
-                first,
-                second,
-            } => {
-                let first_id = first.first_id();
-                let second_id = second.first_id();
-                let ratio = ratio.clamp(0.1, 0.9);
-                let horizontal = *axis == Axis::Horizontal;
-                let total = if horizontal { bounds.0 } else { bounds.1 };
-                let size_a = if horizontal {
-                    (bounds.0 * ratio, bounds.1)
-                } else {
-                    (bounds.0, bounds.1 * ratio)
-                };
-                let size_b = if horizontal {
-                    (bounds.0 * (1. - ratio), bounds.1)
-                } else {
-                    (bounds.0, bounds.1 * (1. - ratio))
-                };
-                let a = self.layout_node(project, first, size_a, window, cx);
-                let b = self.layout_node(project, second, size_b, window, cx);
-                let key =
-                    SharedString::from(format!("split-{}-{first_id}-{second_id}", project.id));
-                let state = self.resize_state(
-                    key.to_string(),
-                    Some((project.id.clone(), first_id, second_id)),
-                    cx,
-                );
-                let group = if horizontal {
-                    h_resizable(key, state)
-                } else {
-                    v_resizable(key, state)
-                };
-                group
-                    .child(
-                        resizable_panel()
-                            .size(px((total * ratio).max(100.)))
-                            .child(a),
-                    )
-                    .child(
-                        resizable_panel()
-                            .size(px((total * (1. - ratio)).max(100.)))
-                            .child(b),
-                    )
-                    .into_any_element()
-            }
-        }
-    }
-    fn render_pane(
+    pub(crate) fn render_pane(
         &mut self,
         project: &Project,
         pane: &Pane,
@@ -271,77 +203,98 @@ impl MintoolApp {
                     .disabled(!closable)
                     .on_click(cx.listener(move |this, _, _, cx| this.close_pane(id, cx))),
             );
-        let body = if pane.showing_file {
-            self.file_preview(project, pane, (bounds.1 - 39.).max(34.), window, cx)
-        } else if let Some(terminal) = self.terminal(project, id, cx) {
-            if focused && self.focus_pending {
-                let focus = terminal.read(cx).focus.clone();
-                focus.focus(window);
-                self.focus_pending = false;
-            }
-            let exited = *terminal
-                .read(cx)
-                .session
-                .lock()
-                .unwrap()
-                .exited
-                .lock()
-                .unwrap();
-            let project_id = project.id.clone();
-            div()
-                .size_full()
-                .relative()
-                .child(terminal)
-                .when(exited, |body| {
-                    body.child(
-                        div()
-                            .absolute()
-                            .bottom_3()
-                            .left_3()
-                            .px_3()
-                            .py_2()
-                            .bg(theme::elevated())
-                            .rounded_md()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child("终端已退出")
-                            .child(
-                                Button::new(
-                                    SharedString::from(format!("restart-{id}")),
-                                    "重新启动",
-                                )
-                                .size(ButtonSize::Sm)
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.restart_terminal(&project_id, id, cx)
-                                    },
-                                )),
-                            ),
+        let body =
+            if pane.showing_file {
+                self.file_preview(project, pane, (bounds.1 - 39.).max(34.), window, cx)
+            } else if pane.terminal_closed {
+                let project = project.id.clone();
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .text_color(theme::muted())
+                    .child("终端已关闭，关联进程已停止")
+                    .child(
+                        Button::new(SharedString::from(format!("new-terminal-{id}")), "新建终端")
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                app.restart_terminal(&project, id, cx)
+                            })),
                     )
-                })
-                .into_any_element()
-        } else {
-            let error = self
-                .workspaces
-                .get(&project.id)
-                .and_then(|w| w.errors.get(&id))
-                .cloned()
-                .unwrap_or_default();
-            let project_id = project.id.clone();
-            div()
-                .size_full()
-                .p_4()
-                .child(error)
-                .child(
-                    Button::new(SharedString::from(format!("retry-{id}")), "重试").on_click(
-                        cx.listener(move |this, _, _, cx| {
-                            this.restart_terminal(&project_id, id, cx)
-                        }),
-                    ),
-                )
-                .into_any_element()
-        };
+                    .into_any_element()
+            } else if let Some(terminal) = self.system_terminal(project, id, window, cx) {
+                terminal
+            } else if let Some(terminal) = self.terminal(project, id, cx) {
+                if focused && self.focus_pending {
+                    let focus = terminal.read(cx).focus.clone();
+                    focus.focus(window);
+                    self.focus_pending = false;
+                }
+                let exited = *terminal
+                    .read(cx)
+                    .session
+                    .lock()
+                    .unwrap()
+                    .exited
+                    .lock()
+                    .unwrap();
+                let project_id = project.id.clone();
+                div()
+                    .size_full()
+                    .relative()
+                    .child(terminal)
+                    .when(exited, |body| {
+                        body.child(
+                            div()
+                                .absolute()
+                                .bottom_3()
+                                .left_3()
+                                .px_3()
+                                .py_2()
+                                .bg(theme::elevated())
+                                .rounded_md()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child("终端已退出")
+                                .child(
+                                    Button::new(
+                                        SharedString::from(format!("restart-{id}")),
+                                        "重新启动",
+                                    )
+                                    .size(ButtonSize::Sm)
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.restart_terminal(&project_id, id, cx)
+                                        },
+                                    )),
+                                ),
+                        )
+                    })
+                    .into_any_element()
+            } else {
+                let error = self
+                    .workspaces
+                    .get(&project.id)
+                    .and_then(|w| w.errors.get(&id))
+                    .cloned()
+                    .unwrap_or_default();
+                let project_id = project.id.clone();
+                div()
+                    .size_full()
+                    .p_4()
+                    .child(error)
+                    .child(
+                        Button::new(SharedString::from(format!("retry-{id}")), "重试").on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.restart_terminal(&project_id, id, cx)
+                            }),
+                        ),
+                    )
+                    .into_any_element()
+            };
         div()
             .id(SharedString::from(format!("pane-{}-{id}", project.id)))
             .size_full()
@@ -366,7 +319,7 @@ impl MintoolApp {
                     }
                 }),
             )
-            .child(header)
+            .when(pane.file.is_some(), |view| view.child(header))
             .child(
                 div()
                     .flex_1()
@@ -380,12 +333,14 @@ impl MintoolApp {
             .into_any_element()
     }
     fn restart_terminal(&mut self, project: &str, id: u64, cx: &mut Context<Self>) {
-        self.terminals.remove(&(project.into(), id));
+        self.stop_terminal(project, id, cx);
         if let Some(w) = self.workspaces.get_mut(project) {
-            w.terminals.remove(&id);
-            w.errors.remove(&id);
+            if let Some(pane) = w.state.layout.find_mut(id) {
+                pane.terminal_closed = false;
+            }
         }
-        cx.notify();
+        self.focus_pending = true;
+        self.changed(cx);
     }
     fn file_preview(
         &mut self,
