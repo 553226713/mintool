@@ -1,15 +1,25 @@
+use super::dialogs::SshDialog;
 use super::{
     browser::RemoteBrowser,
     local::{LocalBrowser, LocalEntry},
     model::SshConnection,
+    module::TransferStatus,
     sftp::{self, RemoteEntry},
 };
 use crate::app::MintoolApp;
 use crate::modules::ssh::path::{basename, join_remote, parent_of};
 use crate::modules::SessionKey;
+use crate::services::mutex::lock_unpoisoned;
+use crate::ui::dialogs::Dialog;
 use adabraka_ui::navigation::menu::MenuItem;
 use gpui::*;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 impl MintoolApp {
     pub(crate) fn ensure_remote_browser(&mut self) {
@@ -86,6 +96,9 @@ impl MintoolApp {
         }
         browser.current = path.clone();
         browser.selected = None;
+        if self.modules.ssh.sync_terminal {
+            self.sync_ssh_terminal(&path, cx);
+        }
         self.start_remote_load(path, cx);
         cx.notify();
     }
@@ -176,6 +189,30 @@ impl MintoolApp {
         cx.notify();
     }
 
+    fn sync_ssh_terminal(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(key) = self.active_session_key() else {
+            return;
+        };
+        if key.module != crate::modules::ModuleId::Ssh {
+            return;
+        }
+        let Some(pane) = self
+            .workspaces
+            .get(&key)
+            .map(|workspace| workspace.state.focused)
+        else {
+            return;
+        };
+        let Some(terminal) = self.terminals.get(&(key, pane)) else {
+            return;
+        };
+        let quoted = path.replace('\'', "'\\''");
+        let command = format!("cd -- '{quoted}' 2>/dev/null\n");
+        let view = terminal.read(cx);
+        let mut session = lock_unpoisoned(&view.session);
+        let _ = session.send(command.as_bytes());
+    }
+
     pub(crate) fn toggle_local_panel(&mut self, cx: &mut Context<Self>) {
         self.modules.ssh.local_visible = !self.modules.ssh.local_visible;
         if self.modules.ssh.local_visible && self.modules.ssh.local.is_none() {
@@ -227,7 +264,7 @@ impl MintoolApp {
             return;
         };
         let Some(entry) = local.selected_file().cloned() else {
-            self.modules.ssh.transfer_status = Some((false, "请先选择本地文件".into()));
+            self.modules.ssh.transfer_status = Some(TransferStatus::error("请先选择本地文件"));
             cx.notify();
             return;
         };
@@ -236,7 +273,7 @@ impl MintoolApp {
         };
         if !remote.entries.contains_key(&remote.current) {
             self.modules.ssh.transfer_status =
-                Some((false, "远程目录尚未加载完成，请稍后重试".into()));
+                Some(TransferStatus::error("远程目录尚未加载完成，请稍后重试"));
             cx.notify();
             return;
         }
@@ -251,16 +288,34 @@ impl MintoolApp {
         let display = format!("~/{}", remote_path);
         let executor = cx.background_executor().clone();
         let local_path = entry.path.clone();
-        self.modules.ssh.transfer_status = Some((true, format!("正在上传 {}…", entry.name)));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task_cancel = cancel.clone();
+        let check_cancel = cancel.clone();
+        let progress = Arc::new(sftp::TransferProgress::default());
+        self.modules.ssh.transfer_status = Some(TransferStatus::running_progress(
+            format!("正在上传 {}…", entry.name),
+            cancel,
+            progress.clone(),
+        ));
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = executor
-                .spawn(async move { sftp::upload_to(&connection, &local_path, &remote_path) })
+                .spawn(async move {
+                    sftp::upload_to_with_progress(
+                        &connection,
+                        &local_path,
+                        &remote_path,
+                        task_cancel,
+                        progress,
+                    )
+                })
                 .await;
+            let cancelled = check_cancel.load(Ordering::Relaxed);
             let _ = this.update(cx, |this, cx| {
                 this.modules.ssh.transfer_status = Some(match result {
-                    Ok(()) => (true, format!("已上传到 {display}")),
-                    Err(error) => (false, format!("上传失败：{error:#}")),
+                    Ok(()) => TransferStatus::info(format!("已上传到 {display}")),
+                    Err(_) if cancelled => TransferStatus::error("已取消上传"),
+                    Err(error) => TransferStatus::error(format!("上传失败：{error:#}")),
                 });
                 if let Some(browser) = &mut this.modules.ssh.remote {
                     browser.entries.remove(&remote_dir);
@@ -278,7 +333,7 @@ impl MintoolApp {
             return;
         };
         let Some(entry) = selected_remote_file(remote).cloned() else {
-            self.modules.ssh.transfer_status = Some((false, "请先选择远程文件".into()));
+            self.modules.ssh.transfer_status = Some(TransferStatus::error("请先选择远程文件"));
             cx.notify();
             return;
         };
@@ -306,19 +361,37 @@ impl MintoolApp {
     ) {
         let executor = cx.background_executor().clone();
         let display = destination.display().to_string();
-        self.modules.ssh.transfer_status = Some((true, format!("正在下载 {name}…")));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task_cancel = cancel.clone();
+        let check_cancel = cancel.clone();
+        let progress = Arc::new(sftp::TransferProgress::default());
+        self.modules.ssh.transfer_status = Some(TransferStatus::running_progress(
+            format!("正在下载 {name}…"),
+            cancel,
+            progress.clone(),
+        ));
         cx.notify();
         let selected = destination.clone();
         cx.spawn(async move |this, cx| {
             let task_destination = destination.clone();
             let result = executor
-                .spawn(async move { sftp::download_to(&connection, &remote, &task_destination) })
+                .spawn(async move {
+                    sftp::download_to_with_progress(
+                        &connection,
+                        &remote,
+                        &task_destination,
+                        task_cancel,
+                        progress,
+                    )
+                })
                 .await;
+            let cancelled = check_cancel.load(Ordering::Relaxed);
             let _ = this.update(cx, |this, cx| {
                 let success = result.is_ok();
                 this.modules.ssh.transfer_status = Some(match result {
-                    Ok(()) => (true, format!("已下载到 {display}")),
-                    Err(error) => (false, format!("下载失败：{error:#}")),
+                    Ok(()) => TransferStatus::info(format!("已下载到 {display}")),
+                    Err(_) if cancelled => TransferStatus::error("已取消下载"),
+                    Err(error) => TransferStatus::error(format!("下载失败：{error:#}")),
                 });
                 if success {
                     if let Some(local) = &mut this.modules.ssh.local {
@@ -405,6 +478,15 @@ impl MintoolApp {
                     this.enter_remote_directory_in_terminal(terminal_path.clone(), cx)
                 },
             ));
+            let download_dir = entry.clone();
+            items.push(self.menu_action(
+                "remote-download-dir",
+                "下载此目录",
+                cx,
+                move |this, _, cx| {
+                    this.download_remote_directory(download_dir.clone(), cx);
+                },
+            ));
         } else {
             let open_path = path.clone();
             items.push(
@@ -412,6 +494,13 @@ impl MintoolApp {
                     this.open_remote_file(open_path.clone(), cx)
                 }),
             );
+            let edit_entry = entry.clone();
+            items.push(self.menu_action(
+                "remote-edit",
+                "编辑远程文件…",
+                cx,
+                move |this, _, cx| this.open_remote_edit(edit_entry.clone(), cx),
+            ));
             let download_path = path.clone();
             items.push(self.menu_action(
                 "remote-download",
@@ -432,6 +521,74 @@ impl MintoolApp {
                 },
             ));
         }
+        if entry.directory {
+            let parent = path.clone();
+            items.push(self.menu_action(
+                "remote-mkdir",
+                "新建文件夹…",
+                cx,
+                move |this, window, cx| {
+                    this.show_dialog(
+                        Dialog::Ssh(SshDialog::RemoteMkdir {
+                            parent: parent.clone(),
+                        }),
+                        window,
+                        cx,
+                    )
+                },
+            ));
+        }
+        items.push(MenuItem::separator());
+        let rename_path = path.clone();
+        let rename_name = entry.name.clone();
+        items.push(self.menu_action(
+            "remote-rename",
+            "重命名…",
+            cx,
+            move |this, window, cx| {
+                this.show_dialog(
+                    Dialog::Ssh(SshDialog::RemoteRename {
+                        path: rename_path.clone(),
+                        name: rename_name.clone(),
+                    }),
+                    window,
+                    cx,
+                )
+            },
+        ));
+        let delete_path = path.clone();
+        let delete_name = entry.name.clone();
+        let directory = entry.directory;
+        items.push(
+            self.menu_action("remote-delete", "删除…", cx, move |this, window, cx| {
+                this.show_dialog(
+                    Dialog::Ssh(SshDialog::RemoteDelete {
+                        path: delete_path.clone(),
+                        name: delete_name.clone(),
+                        directory,
+                    }),
+                    window,
+                    cx,
+                )
+            }),
+        );
+        let chmod_path = path.clone();
+        let chmod_name = entry.name.clone();
+        items.push(self.menu_action(
+            "remote-chmod",
+            "修改权限…",
+            cx,
+            move |this, window, cx| {
+                this.show_dialog(
+                    Dialog::Ssh(SshDialog::RemoteChmod {
+                        path: chmod_path.clone(),
+                        name: chmod_name.clone(),
+                    }),
+                    window,
+                    cx,
+                )
+            },
+        ));
         let copy_path = path.clone();
         items.push(MenuItem::separator());
         items.push(self.menu_action(
@@ -461,6 +618,15 @@ impl MintoolApp {
                     this.navigate_local(enter_path.clone(), cx)
                 }),
             );
+            let directory_entry = entry.clone();
+            items.push(self.menu_action(
+                "local-upload-dir",
+                "上传此目录",
+                cx,
+                move |this, _, cx| {
+                    this.upload_local_directory(directory_entry.clone(), cx);
+                },
+            ));
         } else {
             let upload_path = path.clone();
             items.push(self.menu_action(
@@ -509,7 +675,7 @@ pub(super) fn selected_remote_file(browser: &RemoteBrowser) -> Option<&RemoteEnt
         .find(|entry| entry.path == selected && !entry.directory)
 }
 
-fn unique_remote_name(entries: &[RemoteEntry], name: &str) -> String {
+pub(super) fn unique_remote_name(entries: &[RemoteEntry], name: &str) -> String {
     if !entries.iter().any(|entry| entry.name == name) {
         return name.to_string();
     }
@@ -532,7 +698,7 @@ fn unique_remote_name(entries: &[RemoteEntry], name: &str) -> String {
     name.to_string()
 }
 
-fn unique_download_path(path: PathBuf) -> PathBuf {
+pub(super) fn unique_download_path(path: PathBuf) -> PathBuf {
     if !path.exists() {
         return path;
     }
@@ -555,7 +721,7 @@ fn unique_download_path(path: PathBuf) -> PathBuf {
     path
 }
 
-fn default_download_directory() -> PathBuf {
+pub(super) fn default_download_directory() -> PathBuf {
     let home = LocalBrowser::home();
     let downloads = home.join("Downloads");
     if downloads.is_dir() {

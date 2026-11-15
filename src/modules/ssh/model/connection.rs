@@ -26,6 +26,15 @@ pub struct SshConnection {
     pub extra_args: Vec<String>,
     #[serde(default)]
     pub color: Option<String>,
+    /// Saved forwards: `8080:localhost:80`, `R:9000:localhost:9000`, `D:1080`.
+    #[serde(default)]
+    pub forwards: Vec<String>,
+    /// Password is stored in the system keyring instead of this file.
+    #[serde(default)]
+    pub use_keyring: bool,
+    /// Runtime lookup result, never serialized.
+    #[serde(skip)]
+    pub resolved_password: Option<String>,
 }
 impl SshConnection {
     pub fn new(name: &str, host: &str, group: Option<String>) -> Self {
@@ -40,8 +49,17 @@ impl SshConnection {
             group,
             extra_args: Vec::new(),
             color: None,
+            forwards: Vec::new(),
+            use_keyring: false,
+            resolved_password: None,
         }
     }
+    pub fn password_value(&self) -> Option<&str> {
+        self.resolved_password
+            .as_deref()
+            .or(self.password.as_deref())
+    }
+
     pub fn target(&self) -> String {
         if self.user.is_empty() {
             self.host.clone()

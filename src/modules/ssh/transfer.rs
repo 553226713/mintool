@@ -1,10 +1,16 @@
 use super::{browser::RemoteBrowser, explorer::selected_remote_file, local::LocalBrowser};
 use crate::app::MintoolApp;
 use crate::ui::{file_icon::file_icon, format::format_size, theme};
-use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
+use adabraka_ui::components::{
+    button::{Button, ButtonSize, ButtonVariant},
+    input::Input,
+};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
+};
 
 impl MintoolApp {
     pub(crate) fn render_ssh_explorer(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -36,6 +42,7 @@ impl MintoolApp {
             .map(|connection| connection.name)
             .unwrap_or_else(|| "SSH".into());
         let status = self.modules.ssh.transfer_status.clone();
+        let sync_terminal = self.modules.ssh.sync_terminal;
         div()
             .id("ssh-transfer")
             .size_full()
@@ -60,21 +67,73 @@ impl MintoolApp {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(format!("文件传输 · {connection_name}")),
                     )
-                    .when_some(status, |header, (success, message)| {
-                        header.child(
-                            div()
-                                .flex_none()
-                                .max_w(px(230.))
-                                .truncate()
-                                .text_size(px(10.))
-                                .text_color(if success {
-                                    theme::success()
-                                } else {
-                                    theme::danger()
-                                })
-                                .child(message),
-                        )
+                    .when_some(status, |header, status| {
+                        let color = if status.cancel.is_some() {
+                            theme::warning()
+                        } else if status.success {
+                            theme::success()
+                        } else {
+                            theme::danger()
+                        };
+                        let cancel = status.cancel.clone();
+                        let percent = status.percent();
+                        header
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .max_w(px(180.))
+                                    .truncate()
+                                    .text_size(px(10.))
+                                    .text_color(color)
+                                    .child(status.message),
+                            )
+                            .when_some(percent, |header, percent| {
+                                header
+                                    .child(
+                                        div()
+                                            .w(px(80.))
+                                            .h(px(4.))
+                                            .rounded_full()
+                                            .bg(theme::border())
+                                            .child(
+                                                div()
+                                                    .h_full()
+                                                    .rounded_full()
+                                                    .bg(theme::accent())
+                                                    .w(px(80. * percent as f32 / 100.)),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(10.))
+                                            .text_color(theme::accent())
+                                            .child(format!("{percent}%")),
+                                    )
+                            })
+                            .when_some(cancel, |header, cancel| {
+                                header.child(
+                                    Button::new("cancel-transfer", "取消")
+                                        .variant(ButtonVariant::Ghost)
+                                        .size(ButtonSize::Sm)
+                                        .tooltip("取消当前传输")
+                                        .on_click(move |_, _, _| {
+                                            cancel.store(true, Ordering::Relaxed);
+                                        }),
+                                )
+                            })
                     })
+                    .child(
+                        Button::new("toggle-ssh-sync", "同步终端")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .selected(sync_terminal)
+                            .tooltip("浏览远端目录时在 SSH 终端中执行 cd")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.modules.ssh.sync_terminal = !this.modules.ssh.sync_terminal;
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         Button::new(
                             "toggle-local-transfer",
@@ -214,6 +273,14 @@ impl MintoolApp {
     }
 
     fn render_remote_column(&self, browser: &RemoteBrowser, cx: &mut Context<Self>) -> AnyElement {
+        let filter = self
+            .modules
+            .ssh
+            .remote_filter
+            .read(cx)
+            .content()
+            .trim()
+            .to_lowercase();
         let mut rows = Vec::new();
         if let Some(error) = &browser.error {
             rows.push(
@@ -244,6 +311,8 @@ impl MintoolApp {
             .get(&browser.current)
             .map(Vec::as_slice)
             .unwrap_or(&[])
+            .iter()
+            .filter(|entry| filter.is_empty() || entry.name.to_lowercase().contains(&filter))
         {
             let selected = browser.selected.as_deref() == Some(entry.path.as_str());
             let path = entry.path.clone();
@@ -312,6 +381,22 @@ impl MintoolApp {
                         .on_click(cx.listener(|this, _, _, cx| this.refresh_remote_current(cx))),
                 ],
             ))
+            .child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .child(
+                        Input::new(&self.modules.ssh.remote_filter)
+                            .map(|mut input| {
+                                input.style().align_items = Some(AlignItems::Stretch);
+                                input
+                            })
+                            .w_full(),
+                    ),
+            )
             .child(self.remote_breadcrumbs(&browser.current, cx))
             .child(
                 div()

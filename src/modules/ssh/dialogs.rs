@@ -3,10 +3,8 @@ use crate::app::MintoolApp;
 use crate::model::session::SessionKey;
 use crate::ui::dialogs::DialogContent;
 use crate::ui::theme;
-use adabraka_ui::components::input::Input;
 use adabraka_ui::components::input_state::SelectAll;
 use adabraka_ui::components::select::{Select, SelectOption};
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 #[derive(Clone)]
@@ -20,6 +18,22 @@ pub enum SshDialog {
     GroupAdd,
     GroupRename(String, String),
     GroupRemove(String, String),
+    RemoteMkdir {
+        parent: String,
+    },
+    RemoteRename {
+        path: String,
+        name: String,
+    },
+    RemoteDelete {
+        path: String,
+        name: String,
+        directory: bool,
+    },
+    RemoteChmod {
+        path: String,
+        name: String,
+    },
 }
 
 impl SshDialog {
@@ -43,25 +57,43 @@ impl DialogContent for SshDialog {
             Self::GroupAdd => "新建 SSH 分组",
             Self::GroupRename(..) => "重命名 SSH 分组",
             Self::GroupRemove(..) => "删除 SSH 分组",
+            Self::RemoteMkdir { .. } => "新建远程文件夹",
+            Self::RemoteRename { .. } => "重命名远程文件",
+            Self::RemoteDelete { directory, .. } => {
+                if *directory {
+                    "删除远程目录"
+                } else {
+                    "删除远程文件"
+                }
+            }
+            Self::RemoteChmod { .. } => "修改远程权限",
         }
         .into()
     }
     fn input_value(&self, _app: &MintoolApp) -> String {
         match self {
-            Self::GroupRename(_, name) => name.clone(),
+            Self::GroupRename(_, name) | Self::RemoteRename { name, .. } => name.clone(),
+            Self::RemoteChmod { .. } => "644".into(),
             _ => String::new(),
         }
     }
     fn input_hint(&self) -> Option<&'static str> {
         match self {
             Self::GroupAdd | Self::GroupRename(..) => Some("名称"),
+            Self::RemoteMkdir { .. } => Some("文件夹名称"),
+            Self::RemoteRename { .. } => Some("新名称"),
+            Self::RemoteChmod { .. } => Some("权限（如 644）"),
             _ => None,
         }
     }
     fn accepts_empty_input(&self) -> bool {
         matches!(
             self,
-            Self::Connection { .. } | Self::Remove(..) | Self::Move(..) | Self::GroupRemove(..)
+            Self::Connection { .. }
+                | Self::Remove(..)
+                | Self::Move(..)
+                | Self::GroupRemove(..)
+                | Self::RemoteDelete { .. }
         )
     }
     fn subject(&self) -> Option<String> {
@@ -69,7 +101,10 @@ impl DialogContent for SshDialog {
             Self::Remove(_, name)
             | Self::Move(_, name)
             | Self::GroupRename(_, name)
-            | Self::GroupRemove(_, name) => Some(name.clone()),
+            | Self::GroupRemove(_, name)
+            | Self::RemoteRename { name, .. }
+            | Self::RemoteDelete { name, .. }
+            | Self::RemoteChmod { name, .. } => Some(name.clone()),
             _ => None,
         }
     }
@@ -77,16 +112,24 @@ impl DialogContent for SshDialog {
         match self {
             Self::Remove(..) => Some("删除此连接配置，已打开的 SSH 会话会关闭。".into()),
             Self::GroupRemove(..) => Some("删除此分组，连接会移到未分组。".into()),
+            Self::RemoteDelete {
+                directory: true, ..
+            } => Some("删除此远程目录，目录必须为空。".into()),
+            Self::RemoteDelete {
+                directory: false, ..
+            } => Some("永久删除此远程文件，无法恢复。".into()),
             _ => None,
         }
     }
     fn confirm_label(&self) -> &'static str {
         match self {
             Self::Connection { .. } => "保存连接",
-            Self::Remove(..) | Self::GroupRemove(..) => "删除",
+            Self::Remove(..) | Self::GroupRemove(..) | Self::RemoteDelete { .. } => "删除",
             Self::Move(..) => "移动",
             Self::GroupAdd => "新建分组",
-            Self::GroupRename(..) => "保存",
+            Self::RemoteMkdir { .. } => "新建",
+            Self::RemoteRename { .. } => "重命名",
+            Self::GroupRename(..) | Self::RemoteChmod { .. } => "保存",
         }
     }
     fn enabled(&self, app: &MintoolApp, cx: &mut Context<MintoolApp>) -> bool {
@@ -119,6 +162,9 @@ impl DialogContent for SshDialog {
             }),
             _ => None,
         };
+        app.modules.ssh.form.use_keyring = connection
+            .as_ref()
+            .is_some_and(|connection| connection.use_keyring);
         let selected_group = match self {
             Self::Connection { group, .. } => connection
                 .as_ref()
@@ -160,33 +206,36 @@ impl DialogContent for SshDialog {
         if let Self::Connection { .. } = self {
             app.modules.ssh.form.testing = false;
             app.modules.ssh.form.test_status = None;
-            let (name, host, port, user, password, identity, extra) = connection.map_or_else(
-                || {
-                    (
-                        String::new(),
-                        String::new(),
-                        "22".to_string(),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                    )
-                },
-                |connection| {
-                    (
-                        connection.name,
-                        connection.host,
-                        connection.port.to_string(),
-                        connection.user,
-                        connection.password.unwrap_or_default(),
-                        connection
-                            .identity
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_default(),
-                        connection.extra_args.join(" "),
-                    )
-                },
-            );
+            let (name, host, port, user, password, identity, extra, forwards) = connection
+                .map_or_else(
+                    || {
+                        (
+                            String::new(),
+                            String::new(),
+                            "22".to_string(),
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                        )
+                    },
+                    |connection| {
+                        (
+                            connection.name,
+                            connection.host,
+                            connection.port.to_string(),
+                            connection.user,
+                            connection.password.unwrap_or_default(),
+                            connection
+                                .identity
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_default(),
+                            connection.extra_args.join(" "),
+                            connection.forwards.join(" "),
+                        )
+                    },
+                );
             for (input, value) in [
                 (&app.modules.ssh.form.name, name),
                 (&app.modules.ssh.form.host, host),
@@ -195,6 +244,7 @@ impl DialogContent for SshDialog {
                 (&app.modules.ssh.form.password, password),
                 (&app.modules.ssh.form.identity, identity),
                 (&app.modules.ssh.form.extra, extra),
+                (&app.modules.ssh.form.forwards, forwards),
             ] {
                 input.update(cx, |state, cx| {
                     state.select_all(&SelectAll, window, cx);
@@ -339,255 +389,34 @@ impl DialogContent for SshDialog {
                 app.modules.ssh.registry.remove_group(id);
                 Ok(())
             }
-        }
-    }
-}
-
-impl MintoolApp {
-    pub(crate) fn submit_ssh_connection(
-        &mut self,
-        edit: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> anyhow::Result<()> {
-        let mut connection = self.form_connection(cx)?;
-        if let Some(id) = edit {
-            connection.id = id;
-            self.modules.ssh.registry.update(connection);
-        } else {
-            self.modules.ssh.registry.add(connection);
-        }
-        self.expand_ssh_group();
-        self.changed(cx);
-        Ok(())
-    }
-    fn form_connection(&self, cx: &mut Context<Self>) -> anyhow::Result<SshConnection> {
-        let (name, host, port, user, password, identity, extra) = {
-            let form = &self.modules.ssh.form;
-            (
-                form.name.read(cx).content().trim().to_string(),
-                form.host.read(cx).content().trim().to_string(),
-                form.port.read(cx).content().trim().to_string(),
-                form.user.read(cx).content().trim().to_string(),
-                form.password.read(cx).content().to_string(),
-                form.identity.read(cx).content().trim().to_string(),
-                form.extra.read(cx).content().trim().to_string(),
-            )
-        };
-        anyhow::ensure!(!host.is_empty(), "请填写主机名或 ~/.ssh/config 别名");
-        let port = if port.is_empty() {
-            22
-        } else {
-            match port.parse::<u16>() {
-                Ok(port) if port > 0 => port,
-                _ => anyhow::bail!("端口应为 1 到 65535 之间的数字"),
+            Self::RemoteMkdir { parent } => {
+                app.remote_mkdir(parent.clone(), value, cx);
+                Ok(())
             }
-        };
-        let group = self
-            .modules
-            .ssh
-            .group_select
-            .read(cx)
-            .selected_value()
-            .cloned()
-            .flatten();
-        let mut connection =
-            SshConnection::new(if name.is_empty() { &host } else { &name }, &host, group);
-        connection.port = port;
-        connection.user = user;
-        connection.password = (!password.is_empty()).then_some(password);
-        connection.identity = (!identity.is_empty()).then(|| expand_path(&identity));
-        connection.extra_args = extra.split_whitespace().map(str::to_owned).collect();
-        connection.color = self.modules.ssh.form.color.clone();
-        Ok(connection)
-    }
-    pub(crate) fn test_ssh_connection(&mut self, cx: &mut Context<Self>) {
-        if self.modules.ssh.form.testing {
-            return;
-        }
-        let connection = match self.form_connection(cx) {
-            Ok(connection) => connection,
-            Err(error) => {
-                self.modules.ssh.form.test_status = Some((false, format!("{error:#}")));
-                cx.notify();
-                return;
+            Self::RemoteRename { path, .. } => {
+                app.remote_rename(path.clone(), value, cx);
+                Ok(())
             }
-        };
-        let spec = test_spec(&connection);
-        let executor = cx.background_executor().clone();
-        self.modules.ssh.form.testing = true;
-        self.modules.ssh.form.test_status = None;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = executor.spawn(async move { run_test(&spec) }).await;
-            let _ = this.update(cx, |this, cx| {
-                this.modules.ssh.form.testing = false;
-                this.modules.ssh.form.test_status = Some(result);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-    fn expand_ssh_group(&mut self) {
-        let group = self
-            .modules
-            .ssh
-            .registry
-            .selected()
-            .and_then(|connection| connection.group.clone());
-        if let Some(group) = group {
-            if let Some(group) = self
-                .modules
-                .ssh
-                .registry
-                .groups
-                .iter_mut()
-                .find(|candidate| candidate.id == group)
-            {
-                group.collapsed = false;
+            Self::RemoteDelete {
+                path, directory, ..
+            } => {
+                app.remote_delete(path.clone(), *directory, cx);
+                Ok(())
+            }
+            Self::RemoteChmod { path, .. } => {
+                app.remote_chmod(path.clone(), value, cx);
+                Ok(())
             }
         }
     }
-    /// Form body for the add/edit SSH connection dialog.
-    pub(crate) fn render_ssh_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let form = &self.modules.ssh.form;
-        let field = |label: &'static str, input: Input| {
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(theme::muted())
-                        .child(label),
-                )
-                .child(
-                    input
-                        .map(|mut input| {
-                            input.style().align_items = Some(AlignItems::Stretch);
-                            input
-                        })
-                        .w_full(),
-                )
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(field("连接名称（留空使用主机名）", Input::new(&form.name)))
-            .child(field("主机名或 ~/.ssh/config 别名", Input::new(&form.host)))
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .child(div().w(px(110.)).child(field("端口", Input::new(&form.port))))
-                    .child(div().flex_1().child(field("用户名", Input::new(&form.user)))),
-            )
-            .child(field("密码（可选）", Input::new(&form.password).password(true)))
-            .child(field("私钥路径（可选）", Input::new(&form.identity)))
-            .child(field("高级参数（可选）", Input::new(&form.extra)))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(theme::muted())
-                            .child("标记颜色"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .children(SWATCHES.iter().enumerate().map(|(index, (hex, _))| {
-                                let value = hex.to_string();
-                                let selected = self.modules.ssh.form.color.as_deref() == Some(*hex);
-                                let id = format!("ssh-color-{index}");
-                                div()
-                                    .id(SharedString::from(id))
-                                    .size(px(20.))
-                                    .rounded_full()
-                                    .bg(rgb(color_value(hex)))
-                                    .cursor_pointer()
-                                    .border_2()
-                                    .border_color(if selected {
-                                        theme::text()
-                                    } else {
-                                        theme::panel()
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.modules.ssh.form.color = Some(value.clone());
-                                        cx.notify();
-                                    }))
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(theme::muted())
-                    .child("密码会以明文保存在仅当前用户可读的 SSH 配置文件中；也可以留空并使用密钥或 ssh-agent。"),
-            )
-            .when(self.modules.ssh.form.testing, |form| {
-                form.child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(theme::warning())
-                        .child("正在测试连接…"),
-                )
-            })
-            .when_some(
-                self.modules.ssh.form.test_status.clone(),
-                |form, (success, message)| {
-                    form.child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(if success {
-                                theme::success()
-                            } else {
-                                theme::danger()
-                            })
-                            .child(if success {
-                                format!("✓ {message}")
-                            } else {
-                                format!("✗ {message}")
-                            }),
-                    )
-                },
-            )
-    }
 }
 
-const SWATCHES: [(&str, &str); 6] = [
-    ("#6ee7b7", "绿"),
-    ("#8aaff0", "蓝"),
-    ("#c49de1", "紫"),
-    ("#e1bd85", "橙"),
-    ("#ee8598", "红"),
-    ("#8c9aaa", "灰"),
-];
-
-fn color_value(hex: &str) -> u32 {
-    u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0x8c9aaa)
-}
-
-fn expand_path(value: &str) -> std::path::PathBuf {
-    if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return std::path::PathBuf::from(home).join(rest);
-        }
-    }
-    std::path::PathBuf::from(value)
-}
-
-struct TestSpec {
+pub(super) struct TestSpec {
     args: Vec<String>,
     password: Option<String>,
 }
 
-fn test_spec(connection: &SshConnection) -> TestSpec {
+pub(super) fn test_spec(connection: &SshConnection) -> TestSpec {
     let mut args = Vec::new();
     if connection.port != 22 {
         args.push("-p".to_string());
@@ -608,7 +437,7 @@ fn test_spec(connection: &SshConnection) -> TestSpec {
         "LogLevel=ERROR".to_string(),
         "-T".to_string(),
     ]);
-    if connection.password.is_none() {
+    if connection.password_value().is_none() {
         args.extend(["-o".to_string(), "BatchMode=yes".to_string()]);
     }
     args.extend(connection.extra_args.iter().cloned());
@@ -616,11 +445,11 @@ fn test_spec(connection: &SshConnection) -> TestSpec {
     args.push("true".to_string());
     TestSpec {
         args,
-        password: connection.password.clone(),
+        password: connection.password_value().map(str::to_string),
     }
 }
 
-fn run_test(spec: &TestSpec) -> (bool, String) {
+pub(super) fn run_test(spec: &TestSpec) -> (bool, String) {
     let timeout = if std::path::Path::new("/usr/bin/timeout").exists() {
         "/usr/bin/timeout"
     } else {

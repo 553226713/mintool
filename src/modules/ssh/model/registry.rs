@@ -14,7 +14,15 @@ pub struct SshRegistry {
 }
 impl SshRegistry {
     pub fn load(storage: &Storage) -> Result<Self> {
-        storage.read_json(&storage.registry_path(ModuleId::Ssh))
+        let mut registry: Self = storage.read_json(&storage.registry_path(ModuleId::Ssh))?;
+        for connection in &mut registry.connections {
+            if connection.use_keyring {
+                if let Ok(Some(password)) = crate::services::keyring::lookup(&connection.id) {
+                    connection.resolved_password = Some(password);
+                }
+            }
+        }
+        Ok(registry)
     }
     pub fn save(&self, storage: &Storage) -> Result<()> {
         storage.write_private(&storage.registry_path(ModuleId::Ssh), self)

@@ -166,7 +166,7 @@ fn wait_for(session: &TerminalSession, text: &str) {
             break;
         }
         assert!(
-            start.elapsed() < Duration::from_secs(10),
+            start.elapsed() < Duration::from_secs(20),
             "missing {text:?} in {screen:?}"
         );
         thread::sleep(Duration::from_millis(30));

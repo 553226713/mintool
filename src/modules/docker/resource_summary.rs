@@ -38,6 +38,7 @@ pub(super) fn docker_resource_total(module: &DockerModule, resource: DockerResou
         DockerResource::Images => module.images.len(),
         DockerResource::Volumes => module.volumes.len(),
         DockerResource::Networks => module.networks.len(),
+        DockerResource::Compose => module.compose.len(),
     }
 }
 
@@ -74,6 +75,18 @@ pub(super) fn filtered_docker_resource_count(
                     || volume.name.to_lowercase().contains(filter)
                     || volume.driver.to_lowercase().contains(filter)
                     || volume.mountpoint.to_lowercase().contains(filter)
+            })
+            .count(),
+        DockerResource::Compose => module
+            .compose
+            .iter()
+            .filter(|project| {
+                filter.is_empty()
+                    || project.name.to_lowercase().contains(filter)
+                    || project.services.iter().any(|service| {
+                        service.service.to_lowercase().contains(filter)
+                            || service.name.to_lowercase().contains(filter)
+                    })
             })
             .count(),
         DockerResource::Networks => module

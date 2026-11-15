@@ -8,7 +8,7 @@ pub mod docker;
 pub mod projects;
 pub mod ssh;
 
-use crate::model::session::SessionView;
+use crate::model::session::{SessionView, TerminalLauncher};
 use crate::services::storage::Storage;
 use docker::DockerModule;
 use projects::ProjectModule;
@@ -74,9 +74,27 @@ impl Modules {
                 .map(SessionView::ssh),
             ModuleId::Docker => {
                 let (container_id, view) = docker::model::parse_session_id(&key.id)?;
-                self.docker
-                    .container(&container_id)
-                    .map(|container| SessionView::docker(container, view))
+                if let Some(container) = self.docker.container(&container_id) {
+                    let mut session = SessionView::docker(container, view);
+                    if view == docker::model::DockerView::Logs {
+                        if let TerminalLauncher::Docker { args, .. } = &mut session.launcher {
+                            *args = docker::cli::logs_spec_with(
+                                &container.id,
+                                self.docker.log_tail,
+                                self.docker.log_timestamps,
+                            );
+                        }
+                    }
+                    Some(session)
+                } else if let Some(project) = container_id.strip_prefix("compose-") {
+                    Some(SessionView::docker_compose(
+                        project,
+                        self.docker.log_tail,
+                        self.docker.log_timestamps,
+                    ))
+                } else {
+                    None
+                }
             }
         }
     }

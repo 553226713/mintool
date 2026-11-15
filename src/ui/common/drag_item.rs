@@ -1,11 +1,13 @@
 use crate::ui::theme;
 use gpui::*;
+use std::path::PathBuf;
 #[derive(Clone)]
 pub enum DragKind {
     Project(String),
     Group(String),
     SshConnection(String),
     SshGroup(String),
+    Files(Vec<PathBuf>),
 }
 #[derive(Clone)]
 pub struct DragItem {

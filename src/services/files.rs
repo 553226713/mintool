@@ -22,6 +22,24 @@ struct CachedDocument {
     text: String,
 }
 
+/// Read a UTF-8 text file while enforcing the preview size limit.
+pub fn read_text(path: &Path) -> Result<String> {
+    Ok(read_text_with_metadata(path)?.1)
+}
+
+fn read_text_with_metadata(path: &Path) -> Result<(Option<SystemTime>, String)> {
+    let metadata = fs::metadata(path).with_context(|| format!("无法打开 {}", path.display()))?;
+    anyhow::ensure!(metadata.is_file(), "这不是普通文件");
+    anyhow::ensure!(
+        metadata.len() <= 2 * 1024 * 1024,
+        "文件超过 2 MiB，请在外部程序中查看"
+    );
+    let bytes = fs::read(path)?;
+    anyhow::ensure!(!bytes.contains(&0), "二进制文件暂不支持预览");
+    let text = String::from_utf8(bytes).context("暂仅支持 UTF-8 文本预览")?;
+    Ok((metadata.modified().ok(), text))
+}
+
 /// Save text back to the same path, keeping the existing file permissions.
 pub fn write_text(path: &Path, text: &str) -> Result<()> {
     let metadata = fs::metadata(path).with_context(|| format!("无法打开 {}", path.display()))?;
@@ -80,10 +98,6 @@ impl FileCache {
         let metadata =
             fs::metadata(path).with_context(|| format!("无法打开 {}", path.display()))?;
         anyhow::ensure!(metadata.is_file(), "这不是普通文件");
-        anyhow::ensure!(
-            metadata.len() <= 2 * 1024 * 1024,
-            "文件超过 2 MiB，请在外部程序中查看"
-        );
         let modified = metadata.modified().ok();
         if self
             .documents
@@ -94,9 +108,7 @@ impl FileCache {
             document.checked = Instant::now();
             return Ok(&document.text);
         }
-        let bytes = fs::read(path)?;
-        anyhow::ensure!(!bytes.contains(&0), "二进制文件暂不支持预览");
-        let text = String::from_utf8(bytes).context("暂仅支持 UTF-8 文本预览")?;
+        let text = read_text(path)?;
         let document = self.documents.entry(path.into()).or_insert(CachedDocument {
             modified,
             checked: Instant::now(),

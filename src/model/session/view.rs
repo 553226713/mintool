@@ -10,4 +10,6 @@ pub struct SessionView {
     pub cwd: PathBuf,
     pub launcher: TerminalLauncher,
     pub capabilities: SessionCapabilities,
+    /// Command run before the interactive shell for local project terminals.
+    pub run_command: Option<String>,
 }

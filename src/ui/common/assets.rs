@@ -43,6 +43,7 @@ impl AssetSource for Assets {
             "icons/plus.svg" => include_bytes!("../../../assets/icons/plus.svg").as_slice(),
             "icons/rows-2.svg" => include_bytes!("../../../assets/icons/rows-2.svg").as_slice(),
             "icons/search.svg" => include_bytes!("../../../assets/icons/search.svg").as_slice(),
+            "icons/bell.svg" => include_bytes!("../../../assets/icons/bell.svg").as_slice(),
             "icons/settings-2.svg" => {
                 include_bytes!("../../../assets/icons/settings-2.svg").as_slice()
             }
@@ -112,6 +113,7 @@ const ICONS: &[&str] = &[
     "icons/plus.svg",
     "icons/rows-2.svg",
     "icons/search.svg",
+    "icons/bell.svg",
     "icons/settings-2.svg",
     "icons/square-terminal.svg",
     "icons/x.svg",

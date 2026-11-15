@@ -16,6 +16,31 @@ pub fn home_dir() -> PathBuf {
     crate::services::desktop::home_dir()
 }
 
+/// Shared OpenSSH control socket options. The first connection becomes a
+/// master and later ssh/sftp operations reuse authentication for a minute.
+pub fn control_options() -> Vec<String> {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".mintool").join("run"));
+    let directory = base.join("mintool-ssh");
+    if std::fs::create_dir_all(&directory).is_err() {
+        return Vec::new();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700));
+    }
+    vec![
+        "-o".to_string(),
+        "ControlMaster=auto".to_string(),
+        "-o".to_string(),
+        format!("ControlPath={}/%C", directory.display()),
+        "-o".to_string(),
+        "ControlPersist=60".to_string(),
+    ]
+}
+
 impl SessionView {
     /// Neutral workspace description owned by the SSH module.
     pub fn ssh(connection: &SshConnection) -> Self {
@@ -37,6 +62,7 @@ impl SessionView {
             cwd: home_dir(),
             launcher: TerminalLauncher::Ssh(launched),
             capabilities: SessionCapabilities::SSH,
+            run_command: None,
         }
     }
 }
@@ -60,11 +86,23 @@ pub fn launch(connection: &SshConnection) -> SshLaunch {
         "ServerAliveCountMax=3".to_string(),
     ]);
     args.extend(connection.extra_args.iter().cloned());
+    for forward in &connection.forwards {
+        let (flag, target) = if let Some(target) = forward.strip_prefix("R:") {
+            ("-R", target)
+        } else if let Some(target) = forward.strip_prefix("D:") {
+            ("-D", target)
+        } else {
+            ("-L", forward.as_str())
+        };
+        args.push(flag.to_string());
+        args.push(target.to_string());
+    }
+    args.extend(control_options());
     args.push(connection.target());
     SshLaunch {
         program: "ssh".to_string(),
         args,
-        password: connection.password.clone(),
+        password: connection.password_value().map(str::to_string),
         envs: Vec::new(),
     }
 }

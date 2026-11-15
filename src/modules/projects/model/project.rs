@@ -11,6 +11,19 @@ pub struct Project {
     pub name: String,
     pub path: PathBuf,
     pub group: Option<String>,
+    /// Optional command executed by every newly created terminal.
+    #[serde(default)]
+    pub run_command: Option<String>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub tasks: Vec<String>,
+    #[serde(default)]
+    pub last_opened: Option<u64>,
 }
 impl SessionView {
     /// Neutral workspace description owned by the projects module.
@@ -21,6 +34,7 @@ impl SessionView {
             subtitle: project.path.display().to_string(),
             cwd: project.path.clone(),
             launcher: TerminalLauncher::LocalShell,
+            run_command: project.run_command.clone(),
             capabilities: SessionCapabilities::PROJECT,
         }
     }

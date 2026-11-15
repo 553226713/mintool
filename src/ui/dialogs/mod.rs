@@ -4,7 +4,10 @@
 //! knows the common frame (title, input, footer) and delegates everything else
 //! through [`DialogContent`].
 
+mod conflict;
+mod diff;
 pub mod directory_picker;
+mod notices;
 mod settings;
 mod unsaved;
 
@@ -17,8 +20,11 @@ use crate::ui::theme;
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::input::Input;
 use adabraka_ui::components::input_state::SelectAll;
+pub use conflict::ConflictDialog;
+pub use diff::DiffDialog;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+pub use notices::NoticeHistoryDialog;
 pub use unsaved::UnsavedDialog;
 
 #[derive(Clone)]
@@ -28,6 +34,9 @@ pub enum Dialog {
     Docker(DockerDialog),
     Settings,
     Unsaved(UnsavedDialog),
+    Conflict(ConflictDialog),
+    Diff(DiffDialog),
+    Notices(NoticeHistoryDialog),
 }
 
 /// Presentation contract implemented by every module-owned dialog.
@@ -77,6 +86,10 @@ pub trait DialogContent {
         let _ = (app, cx);
         None
     }
+    /// Read-only dialogs hide the cancel/confirm footer.
+    fn has_actions(&self) -> bool {
+        true
+    }
     /// Extra buttons placed before the cancel/confirm pair.
     fn render_footer(&self, app: &MintoolApp, cx: &mut Context<MintoolApp>) -> Option<AnyElement> {
         let _ = (app, cx);
@@ -110,6 +123,9 @@ impl Dialog {
             Dialog::Docker(dialog) => dialog,
             Dialog::Settings => settings::dialog(),
             Dialog::Unsaved(dialog) => dialog,
+            Dialog::Conflict(dialog) => dialog,
+            Dialog::Diff(dialog) => dialog,
+            Dialog::Notices(dialog) => dialog,
         }
     }
 }
@@ -170,6 +186,7 @@ impl MintoolApp {
         let extra = content.render_extra(self, cx);
         let footer = content.render_footer(self, cx);
         let enabled = content.enabled(self, cx);
+        let has_actions = content.has_actions();
         let confirm = content.confirm_label();
         let directory = content.is_directory();
         let discard_label = content.discard_label();
@@ -268,55 +285,59 @@ impl MintoolApp {
                                     .child(error),
                             )
                         })
-                        .child(
-                            div()
-                                .pt_2()
-                                .flex()
-                                .gap_2()
-                                .items_center()
-                                .when(directory, |row| {
-                                    row.child(
-                                        Button::new("browse", "选择目录…")
-                                            .icon("folder-open")
-                                            .on_click(move |_, window, cx| {
-                                                let _ = app.update(cx, |this, cx| {
-                                                    this.choose_directory(window, cx)
-                                                });
-                                            }),
-                                    )
-                                })
-                                .child(div().flex_1())
-                                .children(footer)
-                                .child(
-                                    Button::new("cancel-dialog", "取消")
-                                        .variant(ButtonVariant::Outline)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.dialog = None;
-                                            cx.notify();
-                                        })),
-                                )
-                                .when_some(discard_label, |row, label| {
-                                    row.child(
-                                        Button::new("discard-dialog", label)
-                                            .variant(ButtonVariant::Destructive)
+                        .when(has_actions, |card| {
+                            card.child(
+                                div()
+                                    .pt_2()
+                                    .flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .when(directory, |row| {
+                                        row.child(
+                                            Button::new("browse", "选择目录…")
+                                                .icon("folder-open")
+                                                .on_click(move |_, window, cx| {
+                                                    let _ = app.update(cx, |this, cx| {
+                                                        this.choose_directory(window, cx)
+                                                    });
+                                                }),
+                                        )
+                                    })
+                                    .child(div().flex_1())
+                                    .children(footer)
+                                    .child(
+                                        Button::new("cancel-dialog", "取消")
+                                            .variant(ButtonVariant::Outline)
                                             .on_click(cx.listener(|this, _, _, cx| {
-                                                if let Some(dialog) = this.dialog.clone() {
-                                                    dialog.content().discard(this, cx);
-                                                }
                                                 this.dialog = None;
-                                                this.changed(cx);
+                                                cx.notify();
                                             })),
                                     )
-                                })
-                                .child(
-                                    Button::new("submit-dialog", confirm)
-                                        .variant(ButtonVariant::Default)
-                                        .disabled(!enabled)
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.submit_dialog(cx)),
-                                        ),
-                                ),
-                        ),
+                                    .when_some(discard_label, |row, label| {
+                                        row.child(
+                                            Button::new("discard-dialog", label)
+                                                .variant(ButtonVariant::Destructive)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if let Some(dialog) = this.dialog.clone() {
+                                                        dialog.content().discard(this, cx);
+                                                    }
+                                                    this.dialog = None;
+                                                    this.changed(cx);
+                                                })),
+                                        )
+                                    })
+                                    .child(
+                                        Button::new("submit-dialog", confirm)
+                                            .variant(ButtonVariant::Default)
+                                            .disabled(!enabled)
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.submit_dialog(cx)
+                                                }),
+                                            ),
+                                    ),
+                            )
+                        }),
                 )
                 .into_any_element(),
         )

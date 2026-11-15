@@ -21,7 +21,14 @@ impl MintoolApp {
         let message = self.error.clone();
         match (&message, &self.error_shown) {
             (Some(message), Some((shown, _))) if shown == message => {}
-            (Some(message), _) => self.error_shown = Some((message.clone(), Instant::now())),
+            (Some(message), _) => {
+                self.error_shown = Some((message.clone(), Instant::now()));
+                self.notice_history
+                    .push_back((message.clone(), Instant::now()));
+                while self.notice_history.len() > 50 {
+                    self.notice_history.pop_front();
+                }
+            }
             (None, _) => self.error_shown = None,
         }
         let message = message?;

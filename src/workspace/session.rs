@@ -17,7 +17,15 @@ impl SessionView {
     /// Build the PTY command for a new terminal pane.
     pub fn terminal_spec(&self, shell: &str) -> TerminalSpec {
         match &self.launcher {
-            TerminalLauncher::LocalShell => TerminalSpec::local_shell(self.cwd.clone(), shell),
+            TerminalLauncher::LocalShell => match &self.run_command {
+                Some(command) => TerminalSpec {
+                    program: shell.into(),
+                    args: vec!["-c".to_string(), format!("{command}; exec {shell}")],
+                    cwd: self.cwd.clone(),
+                    envs: Vec::new(),
+                },
+                None => TerminalSpec::local_shell(self.cwd.clone(), shell),
+            },
             TerminalLauncher::Docker { program, args } => TerminalSpec {
                 program: program.clone(),
                 args: args.clone(),

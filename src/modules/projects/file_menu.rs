@@ -7,7 +7,7 @@ use crate::{
 };
 use adabraka_ui::navigation::menu::MenuItem;
 use gpui::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 impl MintoolApp {
     pub(crate) fn synchronize_file_watches(&mut self) {
@@ -68,6 +68,104 @@ impl MintoolApp {
         }
         cx.notify();
     }
+    pub(crate) fn commit_inline_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.modules.projects.renaming.clone() else {
+            return;
+        };
+        let name = self
+            .modules
+            .projects
+            .rename_input
+            .read(cx)
+            .content()
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            self.error = Some("名称不能为空".into());
+            cx.notify();
+            return;
+        }
+        match self.apply_file_action(&FileAction::Rename(path.clone()), &name, cx) {
+            Ok(()) => {
+                let new_path = path
+                    .parent()
+                    .map(|parent| parent.join(&name))
+                    .unwrap_or_else(|| PathBuf::from(&name));
+                self.modules.projects.selected_files.remove(&path);
+                self.modules.projects.selected_files.insert(new_path);
+                self.modules.projects.renaming = None;
+            }
+            Err(error) => self.error = Some(format!("重命名失败：{error:#}")),
+        }
+        cx.notify();
+    }
+
+    /// Rebase open tabs, saved files and expanded paths after a move/rename.
+    fn rebase_open_paths(&mut self, old: &Path, new: &Path) {
+        for (_, workspace) in self
+            .workspaces
+            .iter_mut()
+            .filter(|(key, _)| key.module == ModuleId::Projects)
+        {
+            workspace.cache.invalidate();
+            for file in workspace.state.files.values_mut() {
+                if let Ok(relative) = file.strip_prefix(old) {
+                    *file = new.join(relative);
+                }
+            }
+            let mut ids = Vec::new();
+            workspace.state.layout.ids(&mut ids);
+            for id in ids {
+                if let Some(pane) = workspace.state.layout.find_mut(id) {
+                    if let Some(file) = &pane.file {
+                        if let Ok(relative) = file.strip_prefix(old) {
+                            pane.file = Some(new.join(relative));
+                        }
+                    }
+                }
+            }
+            workspace.state.expanded = workspace
+                .state
+                .expanded
+                .iter()
+                .map(|path| {
+                    path.strip_prefix(old)
+                        .map(|relative| new.join(relative))
+                        .unwrap_or_else(|_| path.clone())
+                })
+                .collect();
+        }
+    }
+
+    pub(crate) fn move_files_to(
+        &mut self,
+        paths: Vec<PathBuf>,
+        target: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        match FileAction::move_paths(&paths, &target) {
+            Ok(moved) => {
+                for (old, new) in &moved {
+                    self.rebase_open_paths(old, new);
+                }
+                if let Some(project) = self.current() {
+                    if let Some(workspace) =
+                        self.workspaces.get_mut(&SessionKey::project(&project.id))
+                    {
+                        workspace.state.expanded.insert(target.clone());
+                    }
+                }
+                self.modules.projects.selected_files.clear();
+                self.error = Some(format!("已移动 {} 项到 {}", moved.len(), target.display()));
+                self.changed(cx);
+            }
+            Err(error) => {
+                self.error = Some(format!("移动失败：{error:#}"));
+                cx.notify();
+            }
+        }
+    }
+
     pub(crate) fn apply_file_action(
         &mut self,
         action: &FileAction,
@@ -75,6 +173,9 @@ impl MintoolApp {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         let destination = action.execute(name)?;
+        if let (FileAction::Rename(old), Some(new)) = (action, &destination) {
+            self.rebase_open_paths(old, new);
+        }
         let mut removed_file_panes = Vec::new();
         for (session_key, workspace) in self
             .workspaces
@@ -83,36 +184,7 @@ impl MintoolApp {
         {
             workspace.cache.invalidate();
             match action {
-                FileAction::Rename(old) => {
-                    if let Some(new) = &destination {
-                        for file in workspace.state.files.values_mut() {
-                            if let Ok(relative) = file.strip_prefix(old) {
-                                *file = new.join(relative);
-                            }
-                        }
-                        let mut ids = Vec::new();
-                        workspace.state.layout.ids(&mut ids);
-                        for id in ids {
-                            if let Some(pane) = workspace.state.layout.find_mut(id) {
-                                if let Some(file) = &pane.file {
-                                    if let Ok(relative) = file.strip_prefix(old) {
-                                        pane.file = Some(new.join(relative));
-                                    }
-                                }
-                            }
-                        }
-                        workspace.state.expanded = workspace
-                            .state
-                            .expanded
-                            .iter()
-                            .map(|path| {
-                                path.strip_prefix(old)
-                                    .map(|relative| new.join(relative))
-                                    .unwrap_or_else(|_| path.clone())
-                            })
-                            .collect();
-                    }
-                }
+                FileAction::Rename(_) => {}
                 FileAction::NewFile(parent) | FileAction::NewDirectory(parent) => {
                     workspace.state.expanded.insert(parent.clone());
                 }

@@ -57,6 +57,12 @@ impl ProjectRegistry {
             path,
             id: id.clone(),
             group,
+            run_command: None,
+            pinned: false,
+            color: None,
+            archived: false,
+            tasks: Vec::new(),
+            last_opened: None,
         });
         self.selected = Some(id.clone());
         Ok(id)

@@ -5,13 +5,15 @@ pub enum DockerResource {
     Images,
     Volumes,
     Networks,
+    Compose,
 }
 impl DockerResource {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Containers,
         Self::Images,
         Self::Volumes,
         Self::Networks,
+        Self::Compose,
     ];
 
     pub fn label(self) -> &'static str {
@@ -20,6 +22,7 @@ impl DockerResource {
             Self::Images => "镜像",
             Self::Volumes => "卷",
             Self::Networks => "网络",
+            Self::Compose => "Compose",
         }
     }
 
@@ -29,6 +32,7 @@ impl DockerResource {
             Self::Images => "管理本地镜像并复制镜像标识",
             Self::Volumes => "管理持久化数据卷",
             Self::Networks => "管理 Docker 网络",
+            Self::Compose => "按项目分组查看服务，并执行启动、停止、重启和日志",
         }
     }
 
@@ -38,6 +42,7 @@ impl DockerResource {
             Self::Images => "file-archive",
             Self::Volumes => "file-database",
             Self::Networks => "columns-2",
+            Self::Compose => "files",
         }
     }
 }

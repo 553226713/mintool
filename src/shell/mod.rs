@@ -2,6 +2,7 @@
 //! workspace / auxiliary-panel layout.
 
 pub mod activity_bar;
+pub mod command_palette;
 pub mod empty_state;
 pub mod status_bar;
 pub mod toast;

@@ -1,8 +1,5 @@
 use super::LocalEntry;
-use std::{
-    fs,
-    path::PathBuf,
-};
+use std::{fs, path::PathBuf};
 
 #[derive(Clone)]
 pub struct LocalBrowser {

@@ -38,6 +38,87 @@ impl MintoolApp {
                 },
             )
             .disabled(!project.path.is_dir());
+        let (command_id, command_name) = (project.id.clone(), project.name.clone());
+        let command = self.menu_action(
+            "project-command",
+            "设置启动命令…",
+            cx,
+            move |this, window, cx| {
+                let command = this
+                    .modules
+                    .projects
+                    .registry
+                    .projects
+                    .iter()
+                    .find(|project| project.id == command_id)
+                    .and_then(|project| project.run_command.clone());
+                this.show_dialog(
+                    Dialog::Project(ProjectDialog::SetCommand {
+                        id: command_id.clone(),
+                        name: command_name.clone(),
+                        command,
+                    }),
+                    window,
+                    cx,
+                )
+            },
+        );
+        let pin_id = project.id.clone();
+        let pinned = project.pinned;
+        let pin = self.menu_action(
+            "project-pin",
+            if pinned { "取消置顶" } else { "置顶" },
+            cx,
+            move |this, _, cx| {
+                if let Some(project) = this
+                    .modules
+                    .projects
+                    .registry
+                    .projects
+                    .iter_mut()
+                    .find(|project| project.id == pin_id)
+                {
+                    project.pinned = !pinned;
+                }
+                this.changed(cx);
+            },
+        );
+        let (color_id, color_name) = (project.id.clone(), project.name.clone());
+        let color = self.menu_action(
+            "project-color",
+            "设置颜色…",
+            cx,
+            move |this, window, cx| {
+                this.show_dialog(
+                    Dialog::Project(ProjectDialog::SetColor {
+                        id: color_id.clone(),
+                        name: color_name.clone(),
+                    }),
+                    window,
+                    cx,
+                )
+            },
+        );
+        let archive_id = project.id.clone();
+        let archived = project.archived;
+        let archive = self.menu_action(
+            "project-archive",
+            if archived { "取消归档" } else { "归档" },
+            cx,
+            move |this, _, cx| {
+                if let Some(project) = this
+                    .modules
+                    .projects
+                    .registry
+                    .projects
+                    .iter_mut()
+                    .find(|project| project.id == archive_id)
+                {
+                    project.archived = !archived;
+                }
+                this.changed(cx);
+            },
+        );
         let path = project.path.clone();
         let browse = self
             .menu_action(
@@ -69,6 +150,34 @@ impl MintoolApp {
                 )
             },
         );
+        let (task_id, task_name) = (project.id.clone(), project.name.clone());
+        let add_task = self.menu_action(
+            "project-add-task",
+            "添加任务…",
+            cx,
+            move |this, window, cx| {
+                this.show_dialog(
+                    Dialog::Project(ProjectDialog::AddTask {
+                        id: task_id.clone(),
+                        name: task_name.clone(),
+                    }),
+                    window,
+                    cx,
+                )
+            },
+        );
+        let mut task_items = Vec::new();
+        for (index, task) in project.tasks.iter().take(8).enumerate() {
+            let id = project.id.clone();
+            let command = task.clone();
+            let label = format!("运行任务：{task}");
+            task_items.push(self.menu_action(
+                format!("project-task-{index}"),
+                label,
+                cx,
+                move |this, _, cx| this.run_project_task(&id, &command, cx),
+            ));
+        }
         let (id, path) = (project.id.clone(), project.path.display().to_string());
         let locate = self.menu_action(
             "locate",
@@ -133,23 +242,30 @@ impl MintoolApp {
                 )
             },
         );
-        self.menu = Some((
-            position,
-            vec![
-                open,
-                terminal,
-                browse,
-                copy,
-                MenuItem::separator(),
-                rename,
-                locate,
-                move_group,
-                up,
-                down,
-                MenuItem::separator(),
-                remove,
-            ],
-        ));
+        let mut items = vec![
+            open,
+            terminal,
+            command,
+            add_task,
+            pin,
+            color,
+            archive,
+            browse,
+            copy,
+            MenuItem::separator(),
+        ];
+        items.extend(task_items);
+        items.push(MenuItem::separator());
+        items.extend([
+            rename,
+            locate,
+            move_group,
+            up,
+            down,
+            MenuItem::separator(),
+            remove,
+        ]);
+        self.menu = Some((position, items));
         cx.notify();
     }
 }

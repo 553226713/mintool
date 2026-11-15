@@ -1,4 +1,5 @@
 use super::file_changes::{FileChanges, LineChange};
+use anyhow::{bail, Context, Result};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -118,6 +119,97 @@ impl GitSnapshot {
                 .map(|(_, s)| s.as_str())
         })
     }
+    /// Staged changes are the first status column (untracked `??` is not staged).
+    pub fn is_staged(&self, path: &Path) -> bool {
+        self.status(path)
+            .is_some_and(|status| !status.starts_with(' ') && !status.starts_with('?'))
+    }
+    /// Worktree changes are the second column; untracked files count as such.
+    pub fn is_unstaged(&self, path: &Path) -> bool {
+        self.status(path).is_some_and(|status| {
+            status == "??" || status.chars().nth(1).is_some_and(|state| state != ' ')
+        })
+    }
+}
+
+fn run_git(root: &Path, args: &[&std::ffi::OsStr]) -> Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .context("无法启动 git")?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "{}",
+            message.lines().take(3).collect::<Vec<_>>().join(" / ")
+        );
+    }
+    Ok(())
+}
+
+fn relative<'a>(root: &Path, path: &'a Path) -> &'a std::ffi::OsStr {
+    path.strip_prefix(root).unwrap_or(path).as_os_str()
+}
+
+pub fn stage(root: &Path, paths: &[PathBuf]) -> Result<()> {
+    let mut args = vec![
+        std::ffi::OsString::from("add"),
+        std::ffi::OsString::from("--"),
+    ];
+    args.extend(paths.iter().map(|path| relative(root, path).to_owned()));
+    let refs: Vec<&std::ffi::OsStr> = args.iter().map(|arg| arg.as_os_str()).collect();
+    run_git(root, &refs)
+}
+
+pub fn unstage(root: &Path, paths: &[PathBuf]) -> Result<()> {
+    let mut args = vec![
+        std::ffi::OsString::from("restore"),
+        std::ffi::OsString::from("--staged"),
+        std::ffi::OsString::from("--"),
+    ];
+    args.extend(paths.iter().map(|path| relative(root, path).to_owned()));
+    let refs: Vec<&std::ffi::OsStr> = args.iter().map(|arg| arg.as_os_str()).collect();
+    if run_git(root, &refs).is_ok() {
+        return Ok(());
+    }
+    // Initial commit: no HEAD yet, so remove staged files from the index.
+    let mut args = vec![
+        std::ffi::OsString::from("rm"),
+        std::ffi::OsString::from("--cached"),
+        std::ffi::OsString::from("--quiet"),
+        std::ffi::OsString::from("--"),
+    ];
+    args.extend(paths.iter().map(|path| relative(root, path).to_owned()));
+    let refs: Vec<&std::ffi::OsStr> = args.iter().map(|arg| arg.as_os_str()).collect();
+    run_git(root, &refs)
+}
+
+pub fn diff(root: &Path, path: &Path, staged: bool) -> Result<String> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(root).args(["diff", "--no-color"]);
+    if staged {
+        command.arg("--cached");
+    }
+    command.arg("--").arg(relative(root, path));
+    let output = command.output().context("无法启动 git diff")?;
+    if !output.status.success() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub fn commit(root: &Path, message: &str) -> Result<()> {
+    run_git(
+        root,
+        &[
+            std::ffi::OsStr::new("commit"),
+            std::ffi::OsStr::new("-m"),
+            std::ffi::OsStr::new(message),
+        ],
+    )
 }
 
 pub struct GitMonitor {
@@ -150,6 +242,10 @@ impl Default for GitMonitor {
     }
 }
 impl GitMonitor {
+    /// Request a scan on the next poll instead of waiting for the interval.
+    pub fn force(&mut self) {
+        self.last = Instant::now() - Duration::from_secs(10);
+    }
     pub fn poll(&mut self, path: &Path) -> Vec<(PathBuf, GitSnapshot)> {
         if self.requested.as_deref() != Some(path) || self.last.elapsed() >= Duration::from_secs(2)
         {

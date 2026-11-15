@@ -5,6 +5,30 @@ use std::{
     process::Command,
 };
 
+fn unique_destination(parent: &Path, name: &str) -> PathBuf {
+    let candidate = parent.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let extension = path
+        .extension()
+        .map(|extension| format!(".{}", extension.to_string_lossy()))
+        .unwrap_or_default();
+    for index in 1..10_000 {
+        let candidate = parent.join(format!("{stem} ({index}){extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    parent.join(name)
+}
+
 #[derive(Clone, Debug)]
 pub enum FileAction {
     NewFile(PathBuf),
@@ -67,6 +91,30 @@ impl FileAction {
         }
         Ok(Some(destination))
     }
+    /// Move files/directories into `target`, adding a numeric suffix on name
+    /// collisions. Returns the (old, new) pairs that were moved.
+    pub fn move_paths(paths: &[PathBuf], target: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
+        anyhow::ensure!(target.is_dir(), "目标不是目录");
+        let mut moved = Vec::new();
+        for path in paths {
+            if path == target || !path.exists() {
+                continue;
+            }
+            if path.parent() == Some(target) {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .context("无法移动根目录")?
+                .to_string_lossy()
+                .into_owned();
+            let destination = unique_destination(target, &name);
+            fs::rename(path, &destination)?;
+            moved.push((path.clone(), destination));
+        }
+        Ok(moved)
+    }
+
     pub fn duplicate(path: &Path) -> Result<PathBuf> {
         let parent = path.parent().context("无法复制根目录")?;
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();

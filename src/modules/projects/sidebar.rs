@@ -2,6 +2,7 @@ use crate::{
     app::MintoolApp,
     modules::projects::{dialogs::ProjectDialog, model::Project},
     ui::{
+        colors::color_value,
         dialogs::Dialog,
         drag_item::{DragItem, DragKind},
         theme,
@@ -47,14 +48,29 @@ impl MintoolApp {
                 }))
                 .into_any_element(),
         );
-        for project in self
+        let mut ungrouped: Vec<_> = self
             .modules
             .projects
             .registry
             .projects
             .iter()
-            .filter(|p| p.group.is_none() && p.name.to_lowercase().contains(&filter))
-        {
+            .filter(|p| {
+                p.group.is_none()
+                    && p.name.to_lowercase().contains(&filter)
+                    && (!p.archived || self.modules.projects.show_archived)
+            })
+            .collect();
+        if self.modules.projects.sort_recent {
+            ungrouped.sort_by_key(|project| {
+                (
+                    !project.pinned,
+                    std::cmp::Reverse(project.last_opened.unwrap_or(0)),
+                )
+            });
+        } else {
+            ungrouped.sort_by_key(|project| !project.pinned);
+        }
+        for project in ungrouped {
             rows.push(self.project_row(project, cx));
         }
         for group in &self.modules.projects.registry.groups {
@@ -120,9 +136,29 @@ impl MintoolApp {
                 .into_any_element(),
             );
             if !group.collapsed || !filter.is_empty() {
-                for project in self.modules.projects.registry.projects.iter().filter(|p| {
-                    p.group.as_ref() == Some(&id) && p.name.to_lowercase().contains(&filter)
-                }) {
+                let mut grouped: Vec<_> = self
+                    .modules
+                    .projects
+                    .registry
+                    .projects
+                    .iter()
+                    .filter(|p| {
+                        p.group.as_ref() == Some(&id)
+                            && p.name.to_lowercase().contains(&filter)
+                            && (!p.archived || self.modules.projects.show_archived)
+                    })
+                    .collect();
+                if self.modules.projects.sort_recent {
+                    grouped.sort_by_key(|project| {
+                        (
+                            !project.pinned,
+                            std::cmp::Reverse(project.last_opened.unwrap_or(0)),
+                        )
+                    });
+                } else {
+                    grouped.sort_by_key(|project| !project.pinned);
+                }
+                for project in grouped {
                     rows.push(self.project_row(project, cx));
                 }
             }
@@ -166,6 +202,41 @@ impl MintoolApp {
                                     self.modules.projects.registry.projects.len()
                                 ),
                             )),
+                    )
+                    .child(
+                        Button::new(
+                            "toggle-recent",
+                            if self.modules.projects.sort_recent {
+                                "最近"
+                            } else {
+                                "默认"
+                            },
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .tooltip("按最近打开时间排序")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.modules.projects.sort_recent = !this.modules.projects.sort_recent;
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        Button::new(
+                            "toggle-archived",
+                            if self.modules.projects.show_archived {
+                                "隐藏归档"
+                            } else {
+                                "显示归档"
+                            },
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .tooltip("显示或隐藏已归档项目")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.modules.projects.show_archived =
+                                !this.modules.projects.show_archived;
+                            cx.notify();
+                        })),
                     )
                     .child(
                         Button::new("add-group", "")
@@ -276,6 +347,14 @@ impl MintoolApp {
                     theme::elevated()
                 })
             })
+            .when_some(project.color.clone(), |row, color| {
+                row.child(
+                    div()
+                        .size(px(7.))
+                        .rounded_full()
+                        .bg(rgb(color_value(&color))),
+                )
+            })
             .child(
                 Icon::new(if missing { "folder-x" } else { "folder-closed" })
                     .size(px(15.))
@@ -285,6 +364,22 @@ impl MintoolApp {
                         theme::muted()
                     }),
             )
+            .when(project.archived, |row| {
+                row.child(
+                    div()
+                        .text_size(px(9.))
+                        .text_color(theme::muted())
+                        .child("已归档"),
+                )
+            })
+            .when(project.pinned, |row| {
+                row.child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(theme::accent())
+                        .child("★"),
+                )
+            })
             .child(
                 div()
                     .flex_1()

@@ -13,7 +13,18 @@ use std::{
     thread,
 };
 
-const SCROLLBACK_LINES: usize = 2000;
+static SCROLLBACK_LINES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2000);
+
+pub fn set_scrollback(lines: usize) {
+    SCROLLBACK_LINES.store(
+        lines.clamp(200, 20_000),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn scrollback() -> usize {
+    SCROLLBACK_LINES.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Everything needed to start a terminal process, independent of the module
 /// that requested it (local project shell, SSH connection, future Docker).
@@ -42,7 +53,7 @@ fn process_parser_byte(parser: &mut vt100::Parser, byte: u8) {
     .is_err()
     {
         let (rows, cols) = parser.screen().size();
-        *parser = vt100::Parser::new(rows, cols, SCROLLBACK_LINES);
+        *parser = vt100::Parser::new(rows, cols, scrollback());
     }
 }
 
@@ -94,7 +105,7 @@ impl TerminalSession {
         let thread_writer = writer.clone();
         let rows = NonZeroU16::new(size.rows).context("终端行数为零")?;
         let cols = NonZeroU16::new(size.cols).context("终端列数为零")?;
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, scrollback())));
         let thread_parser = parser.clone();
         let exited = Arc::new(AtomicBool::new(false));
         let thread_exited = exited.clone();

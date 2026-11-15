@@ -20,7 +20,14 @@ impl MintoolApp {
         let exec = self.menu_action("docker-exec", "进入终端", cx, move |this, _, cx| {
             this.open_docker_session(exec_id.clone(), DockerView::Exec, cx)
         });
-        let mut items = vec![logs, exec, MenuItem::separator()];
+        let details_id = container.id.clone();
+        let details = self.menu_action(
+            "docker-details",
+            "查看详情",
+            cx,
+            move |this, window, cx| this.show_container_details(details_id.clone(), window, cx),
+        );
+        let mut items = vec![logs, exec, details, MenuItem::separator()];
         if container.paused() {
             let id = container.id.clone();
             items.push(self.menu_action(
@@ -98,6 +105,46 @@ impl MintoolApp {
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
+        let run_reference = image.reference();
+        let run = self.menu_action(
+            "docker-image-run",
+            "运行容器…",
+            cx,
+            move |this, window, cx| {
+                this.show_dialog(
+                    Dialog::Docker(DockerDialog::RunImage {
+                        reference: run_reference.clone(),
+                    }),
+                    window,
+                    cx,
+                )
+            },
+        );
+        let tag_id = image.id.clone();
+        let tag_reference = image.reference();
+        let tag = self.menu_action(
+            "docker-image-tag",
+            "标记镜像…",
+            cx,
+            move |this, window, cx| {
+                this.show_dialog(
+                    Dialog::Docker(DockerDialog::TagImage {
+                        id: tag_id.clone(),
+                        reference: tag_reference.clone(),
+                    }),
+                    window,
+                    cx,
+                )
+            },
+        );
+        let pull = self.menu_action(
+            "docker-image-pull",
+            "拉取镜像…",
+            cx,
+            |this, window, cx| {
+                this.show_dialog(Dialog::Docker(DockerDialog::PullImage), window, cx)
+            },
+        );
         let reference = image.reference();
         let copy_name = self.menu_action(
             "docker-image-copy",
@@ -130,7 +177,17 @@ impl MintoolApp {
         );
         self.menu = Some((
             position,
-            vec![copy_name, copy_id, MenuItem::separator(), remove],
+            vec![
+                run,
+                tag,
+                MenuItem::separator(),
+                pull,
+                MenuItem::separator(),
+                copy_name,
+                copy_id,
+                MenuItem::separator(),
+                remove,
+            ],
         ));
         cx.notify();
     }

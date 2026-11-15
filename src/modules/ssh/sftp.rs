@@ -4,10 +4,18 @@ use anyhow::{bail, Context, Result};
 use std::{
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
 };
 
-const TIMEOUT_SECONDS: &str = "20";
+/// Metadata operations should fail fast; transfers may legitimately run for a
+/// long time and must not be killed after 20 seconds.
+const OP_TIMEOUT_SECONDS: &str = "20";
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(3600);
 
 #[derive(Clone, Debug)]
 pub struct RemoteEntry {
@@ -22,21 +30,83 @@ fn quote(path: &str) -> String {
     format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Shared byte counters for the transfer progress bar.
+pub struct TransferProgress {
+    total: AtomicU64,
+    transferred: AtomicU64,
+    track: AtomicBool,
+}
+
+impl Default for TransferProgress {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl TransferProgress {
+    pub fn new(total: u64) -> Self {
+        Self {
+            total: AtomicU64::new(total),
+            transferred: AtomicU64::new(0),
+            track: AtomicBool::new(true),
+        }
+    }
+    pub fn untracked() -> Self {
+        let progress = Self::new(0);
+        progress.track.store(false, Ordering::Relaxed);
+        progress
+    }
+    pub fn tracked(&self) -> bool {
+        self.track.load(Ordering::Relaxed)
+    }
+    pub fn set_total(&self, total: u64) {
+        self.total.store(total, Ordering::Relaxed);
+    }
+    pub fn set_transferred(&self, bytes: u64) {
+        self.transferred.store(bytes, Ordering::Relaxed);
+    }
+    pub fn finish(&self, total: u64) {
+        self.set_total(total);
+        self.set_transferred(total);
+    }
+    pub fn percent(&self) -> Option<u8> {
+        let total = self.total.load(Ordering::Relaxed);
+        if total == 0 {
+            return None;
+        }
+        let transferred = self.transferred.load(Ordering::Relaxed).min(total);
+        Some(((transferred.saturating_mul(100) / total).min(100)) as u8)
+    }
+}
+
+fn spawn_progress(
+    progress: Arc<TransferProgress>,
+    done: Arc<AtomicBool>,
+    poll: impl Fn() -> u64 + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        while !done.load(Ordering::Relaxed) {
+            progress.set_transferred(poll());
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    });
+}
+
 fn run(connection: &SshConnection, commands: &[String]) -> Result<String> {
-    let timeout = if Path::new("/usr/bin/timeout").exists() {
-        "/usr/bin/timeout"
-    } else {
-        "timeout"
-    };
-    let mut command = Command::new(timeout);
-    command.arg(TIMEOUT_SECONDS).arg("sftp").arg("-q");
+    run_with_timeout(connection, commands, OP_TIMEOUT_SECONDS)
+}
+
+fn sftp_args(connection: &SshConnection) -> Vec<String> {
+    let mut args = vec!["-q".to_string()];
     if connection.port != 22 {
-        command.arg("-P").arg(connection.port.to_string());
+        args.push("-P".to_string());
+        args.push(connection.port.to_string());
     }
     if let Some(identity) = &connection.identity {
-        command.arg("-i").arg(identity);
+        args.push("-i".to_string());
+        args.push(identity.display().to_string());
     }
-    command.args([
+    for option in [
         "-o",
         "ConnectTimeout=8",
         "-o",
@@ -45,16 +115,20 @@ fn run(connection: &SshConnection, commands: &[String]) -> Result<String> {
         "NumberOfPasswordPrompts=1",
         "-o",
         "LogLevel=ERROR",
-    ]);
-    if connection.password.is_none() {
-        command.args(["-o", "BatchMode=yes"]);
+    ] {
+        args.push(option.to_string());
     }
-    command.arg(connection.target());
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(password) = &connection.password {
+    if connection.password.is_none() {
+        args.push("-o".to_string());
+        args.push("BatchMode=yes".to_string());
+    }
+    args.extend(super::session::control_options());
+    args.push(connection.target());
+    args
+}
+
+fn configure_askpass(command: &mut Command, connection: &SshConnection) {
+    if let Some(password) = connection.password_value() {
         if let Some(executable) = super::session::askpass_executable() {
             command
                 .env("SSH_ASKPASS", executable)
@@ -63,15 +137,9 @@ fn run(connection: &SshConnection, commands: &[String]) -> Result<String> {
                 .env("MINTOOL_ASKPASS_PASSWORD", password);
         }
     }
-    let mut child = command.spawn().context("无法启动 sftp")?;
-    {
-        let mut stdin = child.stdin.take().context("无法写入 sftp")?;
-        for command in commands {
-            writeln!(stdin, "{command}")?;
-        }
-        writeln!(stdin, "quit")?;
-    }
-    let output = child.wait_with_output()?;
+}
+
+fn finish(output: Output) -> Result<String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -85,6 +153,78 @@ fn run(connection: &SshConnection, commands: &[String]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn spawn_sftp(connection: &SshConnection, program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.args(sftp_args(connection));
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_askpass(&mut command, connection);
+    command
+}
+
+fn write_commands(child: &mut std::process::Child, commands: &[String]) -> Result<()> {
+    let mut stdin = child.stdin.take().context("无法写入 sftp")?;
+    for command in commands {
+        writeln!(stdin, "{command}")?;
+    }
+    writeln!(stdin, "quit")?;
+    Ok(())
+}
+
+fn run_with_timeout(
+    connection: &SshConnection,
+    commands: &[String],
+    timeout_seconds: &str,
+) -> Result<String> {
+    let timeout = if Path::new("/usr/bin/timeout").exists() {
+        "/usr/bin/timeout"
+    } else {
+        "timeout"
+    };
+    let mut command = Command::new(timeout);
+    command.arg(timeout_seconds).arg("sftp");
+    command.args(sftp_args(connection));
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_askpass(&mut command, connection);
+    let mut child = command.spawn().context("无法启动 sftp")?;
+    write_commands(&mut child, commands)?;
+    finish(child.wait_with_output()?)
+}
+
+fn run_transfer(
+    connection: &SshConnection,
+    commands: &[String],
+    cancel: &AtomicBool,
+) -> Result<String> {
+    let mut child = spawn_sftp(connection, "sftp")
+        .spawn()
+        .context("无法启动 sftp")?;
+    write_commands(&mut child, commands)?;
+    let start = Instant::now();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("传输已取消");
+        }
+        if start.elapsed() >= TRANSFER_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("传输超时");
+        }
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    finish(child.wait_with_output()?)
 }
 
 pub fn list_directory(connection: &SshConnection, parent: &str) -> Result<Vec<RemoteEntry>> {
@@ -112,14 +252,53 @@ pub fn stat_file(connection: &SshConnection, remote: &str) -> Result<RemoteEntry
 }
 
 pub fn upload_to(connection: &SshConnection, local: &Path, remote: &str) -> Result<()> {
-    let output = run(
+    upload_to_with_progress(
+        connection,
+        local,
+        remote,
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(TransferProgress::untracked()),
+    )
+}
+
+pub fn upload_to_with_progress(
+    connection: &SshConnection,
+    local: &Path,
+    remote: &str,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<TransferProgress>,
+) -> Result<()> {
+    let tracked = progress.tracked();
+    let total = std::fs::metadata(local)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    progress.set_total(total);
+    let done = Arc::new(AtomicBool::new(false));
+    if tracked && total > 0 {
+        let poll_connection = connection.clone();
+        let poll_remote = remote.to_string();
+        let poll_progress = progress.clone();
+        let poll_done = done.clone();
+        spawn_progress(poll_progress, poll_done, move || {
+            stat_file(&poll_connection, &poll_remote)
+                .map(|entry| entry.size)
+                .unwrap_or(0)
+        });
+    }
+    let recursive = if local.is_dir() { "-r " } else { "" };
+    let result = run_transfer(
         connection,
         &[format!(
-            "put {} {}",
+            "put {recursive}{} {}",
             quote(&local.display().to_string()),
             quote(remote)
         )],
-    )?;
+        &cancel,
+    );
+    done.store(true, Ordering::Relaxed);
+    let output = result?;
     let lower = output.to_lowercase();
     if lower.contains("can't put")
         || lower.contains("not found")
@@ -131,6 +310,7 @@ pub fn upload_to(connection: &SshConnection, local: &Path, remote: &str) -> Resu
             output.lines().last().unwrap_or("权限或路径错误")
         );
     }
+    progress.finish(total);
     Ok(())
 }
 
@@ -143,15 +323,110 @@ pub fn remove_remote(connection: &SshConnection, remote: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn download_to(connection: &SshConnection, remote: &str, local: &Path) -> Result<()> {
+pub fn remove_directory(connection: &SshConnection, remote: &str) -> Result<()> {
+    let output = run(connection, &[format!("rmdir {}", quote(remote))])?;
+    let lower = output.to_lowercase();
+    if lower.contains("can't remove") || lower.contains("not found") || lower.contains("not empty")
+    {
+        bail!("无法删除远程目录（目录必须为空）");
+    }
+    Ok(())
+}
+
+pub fn mkdir(connection: &SshConnection, remote: &str) -> Result<()> {
+    let output = run(connection, &[format!("mkdir {}", quote(remote))])?;
+    let lower = output.to_lowercase();
+    if lower.contains("can't mkdir")
+        || lower.contains("failure")
+        || lower.contains("permission denied")
+    {
+        bail!("无法新建远程目录");
+    }
+    Ok(())
+}
+
+pub fn rename(connection: &SshConnection, from: &str, to: &str) -> Result<()> {
     let output = run(
         connection,
+        &[format!("rename {} {}", quote(from), quote(to))],
+    )?;
+    let lower = output.to_lowercase();
+    if lower.contains("couldn't")
+        || lower.contains("failure")
+        || lower.contains("not found")
+        || lower.contains("permission denied")
+    {
+        bail!("无法重命名远程文件");
+    }
+    Ok(())
+}
+
+pub fn chmod(connection: &SshConnection, remote: &str, mode: &str) -> Result<()> {
+    anyhow::ensure!(
+        (3..=4).contains(&mode.len()) && mode.chars().all(|c| ('0'..='7').contains(&c)),
+        "权限应为 3 或 4 位八进制数字，例如 644"
+    );
+    let output = run(connection, &[format!("chmod {mode} {}", quote(remote))])?;
+    let lower = output.to_lowercase();
+    if lower.contains("failure")
+        || lower.contains("not found")
+        || lower.contains("permission denied")
+    {
+        bail!("无法修改远程文件权限");
+    }
+    Ok(())
+}
+
+pub fn download_to(connection: &SshConnection, remote: &str, local: &Path) -> Result<()> {
+    download_to_with_progress(
+        connection,
+        remote,
+        local,
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(TransferProgress::untracked()),
+    )
+}
+
+pub fn download_to_with_progress(
+    connection: &SshConnection,
+    remote: &str,
+    local: &Path,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<TransferProgress>,
+) -> Result<()> {
+    let tracked = progress.tracked();
+    let total = if tracked {
+        stat_file(connection, remote)
+            .ok()
+            .filter(|entry| !entry.directory)
+            .map(|entry| entry.size)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    progress.set_total(total);
+    let done = Arc::new(AtomicBool::new(false));
+    if tracked && total > 0 {
+        let poll_local = local.to_path_buf();
+        let poll_progress = progress.clone();
+        let poll_done = done.clone();
+        spawn_progress(poll_progress, poll_done, move || {
+            std::fs::metadata(&poll_local)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
+        });
+    }
+    let result = run_transfer(
+        connection,
         &[format!(
-            "get {} {}",
+            "get -r {} {}",
             quote(remote),
             quote(&local.display().to_string())
         )],
-    )?;
+        &cancel,
+    );
+    done.store(true, Ordering::Relaxed);
+    let output = result?;
     let lower = output.to_lowercase();
     if !local.exists()
         || lower.contains("can't get")
@@ -161,6 +436,7 @@ pub fn download_to(connection: &SshConnection, remote: &str, local: &Path) -> Re
         let _ = std::fs::remove_file(local);
         bail!("无法下载远程文件");
     }
+    progress.finish(total);
     Ok(())
 }
 

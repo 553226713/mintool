@@ -1,3 +1,4 @@
+mod compose;
 mod container;
 mod image;
 mod network;
@@ -6,6 +7,7 @@ mod session;
 mod view;
 mod volume;
 
+pub use compose::{ComposeProject, ComposeService};
 pub use container::DockerContainer;
 pub use image::DockerImage;
 pub use network::DockerNetwork;

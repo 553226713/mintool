@@ -1,4 +1,6 @@
-use super::model::{DockerContainer, DockerImage, DockerNetwork, DockerVolume};
+use super::model::{
+    ComposeProject, ComposeService, DockerContainer, DockerImage, DockerNetwork, DockerVolume,
+};
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::process::Command;
@@ -68,12 +70,26 @@ pub fn snapshot() -> Result<(
     Vec<DockerVolume>,
     Vec<DockerNetwork>,
 )> {
-    Ok((
-        list_containers()?,
-        list_images()?,
-        list_volumes()?,
-        list_networks()?,
-    ))
+    // The four queries are independent; run them concurrently so a refresh
+    // costs roughly one Docker CLI round-trip instead of four.
+    std::thread::scope(|scope| {
+        let containers = scope.spawn(list_containers);
+        let images = scope.spawn(list_images);
+        let volumes = scope.spawn(list_volumes);
+        let networks = scope.spawn(list_networks);
+        Ok((
+            join_thread(containers)?,
+            join_thread(images)?,
+            join_thread(volumes)?,
+            join_thread(networks)?,
+        ))
+    })
+}
+
+fn join_thread<'a, T>(result: std::thread::ScopedJoinHandle<'a, Result<T>>) -> Result<T> {
+    result
+        .join()
+        .map_err(|_| anyhow::anyhow!("Docker 查询线程异常退出"))?
 }
 
 pub fn action(id: &str, action: &str) -> Result<()> {
@@ -96,14 +112,337 @@ pub fn remove_network(id: &str) -> Result<()> {
     run(&["network", "rm", id], "20").map(|_| ())
 }
 
+pub fn prune(resource: super::model::DockerResource) -> Result<String> {
+    let args: &[&str] = match resource {
+        super::model::DockerResource::Containers => &["container", "prune", "-f"],
+        super::model::DockerResource::Images => &["image", "prune", "-f"],
+        super::model::DockerResource::Volumes => &["volume", "prune", "-f"],
+        super::model::DockerResource::Networks => &["network", "prune", "-f"],
+        super::model::DockerResource::Compose => {
+            bail!("Compose 项目不支持清理")
+        }
+    };
+    run(args, "60").map(|output| output.trim().to_string())
+}
+
+pub fn pull_image(reference: &str) -> Result<()> {
+    run(&["pull", reference], "300").map(|_| ())
+}
+
+pub fn tag_image(id: &str, reference: &str) -> Result<()> {
+    run(&["tag", id, reference], "20").map(|_| ())
+}
+
+pub fn create_volume(name: &str) -> Result<()> {
+    run(&["volume", "create", name], "20").map(|_| ())
+}
+
+pub fn create_network(name: &str) -> Result<()> {
+    run(&["network", "create", name], "20").map(|_| ())
+}
+
+pub fn compose_projects() -> Result<Vec<ComposeProject>> {
+    let output = run(&["compose", "ls", "--all", "--format", "json"], "30")?;
+    let mut projects = parse_compose_projects(&output);
+    for project in &mut projects {
+        if let Ok(output) = run(
+            &[
+                "compose",
+                "-p",
+                project.name.as_str(),
+                "ps",
+                "--all",
+                "--format",
+                "json",
+            ],
+            "30",
+        ) {
+            project.services = parse_compose_services(&output);
+        }
+    }
+    Ok(projects)
+}
+
+pub fn compose_action(project: &str, action: &str) -> Result<()> {
+    let mut args = vec!["compose".to_string(), "-p".to_string(), project.to_string()];
+    match action {
+        "up" => {
+            args.push("up".to_string());
+            args.push("-d".to_string());
+        }
+        "down" => args.push("down".to_string()),
+        "restart" => args.push("restart".to_string()),
+        _ => bail!("不支持的 Compose 操作"),
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(&refs, "180").map(|_| ())
+}
+
+fn parse_compose_projects(output: &str) -> Vec<ComposeProject> {
+    let Ok(value) = serde_json::from_str::<Value>(output.trim()) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    let mut projects: Vec<_> = items
+        .iter()
+        .filter_map(|item| {
+            let name = item
+                .get("Name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(ComposeProject {
+                name,
+                status: item
+                    .get("Status")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                config_files: item
+                    .get("ConfigFiles")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                services: Vec::new(),
+            })
+        })
+        .collect();
+    projects.sort_by(|left, right| left.name.cmp(&right.name));
+    projects
+}
+
+fn parse_compose_services(output: &str) -> Vec<ComposeService> {
+    let Ok(value) = serde_json::from_str::<Value>(output.trim()) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    let text = |item: &Value, key: &str| {
+        item.get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let mut services: Vec<_> = items
+        .iter()
+        .map(|item| ComposeService {
+            name: text(item, "Name"),
+            service: text(item, "Service"),
+            state: text(item, "State"),
+            ports: text(item, "Ports"),
+        })
+        .collect();
+    services.sort_by(|left, right| left.service.cmp(&right.service));
+    services
+}
+
+/// One-shot `docker stats` snapshot formatted for the details dialog.
+pub fn stats_summary() -> Result<String> {
+    let output = run(&["stats", "--no-stream", "--format", "{{json .}}"], "20")?;
+    let mut lines = vec![format!(
+        "{:<24} {:>8} {:>18} {:>14} {:>14} {:>6}",
+        "名称", "CPU", "内存", "网络 I/O", "磁盘 I/O", "PIDs"
+    )];
+    for line in output.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        let text = |key: &str| {
+            value
+                .get(key)
+                .and_then(|value| value.as_str())
+                .unwrap_or("-")
+                .to_string()
+        };
+        lines.push(format!(
+            "{:<24} {:>8} {:>18} {:>14} {:>14} {:>6}",
+            text("Name"),
+            text("CPUPerc"),
+            text("MemUsage"),
+            text("NetIO"),
+            text("BlockIO"),
+            text("PIDs")
+        ));
+    }
+    if lines.len() == 1 {
+        lines.push("没有运行中的容器".to_string());
+    }
+    Ok(lines.join("\n"))
+}
+
 pub fn logs_spec(id: &str) -> Vec<String> {
-    vec![
+    logs_spec_with(id, 500, false)
+}
+
+pub fn logs_spec_with(id: &str, tail: u32, timestamps: bool) -> Vec<String> {
+    let mut args = vec![
         "logs".to_string(),
         "-f".to_string(),
         "--tail".to_string(),
-        "500".to_string(),
-        id.to_string(),
-    ]
+        tail.to_string(),
+    ];
+    if timestamps {
+        args.push("--timestamps".to_string());
+    }
+    args.push(id.to_string());
+    args
+}
+
+pub fn run_image(
+    image: &str,
+    name: &str,
+    ports: &str,
+    env: &str,
+    mounts: &str,
+    command: &str,
+) -> Result<String> {
+    let mut args = vec!["run".to_string(), "-d".to_string()];
+    if !name.trim().is_empty() {
+        args.push("--name".to_string());
+        args.push(name.trim().to_string());
+    }
+    for port in ports
+        .split([',', ' '])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        args.push("-p".to_string());
+        args.push(port.to_string());
+    }
+    for variable in env.split_whitespace().filter(|part| part.contains('=')) {
+        args.push("-e".to_string());
+        args.push(variable.to_string());
+    }
+    for mount in mounts
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        args.push("-v".to_string());
+        args.push(mount.to_string());
+    }
+    args.push(image.to_string());
+    args.extend(command.split_whitespace().map(str::to_string));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    Ok(run(&refs, "60")?.trim().to_string())
+}
+
+pub fn inspect_container(id: &str) -> Result<String> {
+    let output = run(&["inspect", "--format", "{{json .}}", id], "10")?;
+    let value: Value = serde_json::from_str(output.trim()).context("无法解析容器详情")?;
+    let mut lines = Vec::new();
+    let id = json_str(&value, &["Id"]);
+    let name = json_str(&value, &["Name"]);
+    lines.push(format!(
+        "ID        {}",
+        if id.is_empty() { "-" } else { &id }
+    ));
+    lines.push(format!(
+        "名称      {}",
+        name.trim_start_matches('/').to_string()
+    ));
+    lines.push(format!(
+        "镜像      {}",
+        json_str(&value, &["Config", "Image"])
+    ));
+    lines.push(format!(
+        "状态      {}",
+        json_str(&value, &["State", "Status"])
+    ));
+    lines.push(format!(
+        "启动      {}",
+        json_str(&value, &["State", "StartedAt"])
+    ));
+    lines.push(format!("创建      {}", json_str(&value, &["Created"])));
+    let mut command = json_strings(&value, &["Config", "Entrypoint"]);
+    command.extend(json_strings(&value, &["Config", "Cmd"]));
+    if !command.is_empty() {
+        lines.push(format!("命令      {}", command.join(" ")));
+    }
+    let ports = json_ports(&value);
+    if !ports.is_empty() {
+        lines.push("端口".to_string());
+        lines.extend(ports.into_iter().map(|port| format!("  {port}")));
+    }
+    let env = json_strings(&value, &["Config", "Env"]);
+    if !env.is_empty() {
+        lines.push("环境变量".to_string());
+        lines.extend(env.into_iter().map(|item| format!("  {item}")));
+    }
+    if let Some(mounts) = value.get("Mounts").and_then(|mounts| mounts.as_array()) {
+        if !mounts.is_empty() {
+            lines.push("挂载".to_string());
+            for mount in mounts {
+                let source = mount.get("Source").and_then(|v| v.as_str()).unwrap_or("-");
+                let destination = mount
+                    .get("Destination")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
+                let mode = mount.get("Mode").and_then(|v| v.as_str()).unwrap_or("");
+                lines.push(format!("  {source} → {destination} {mode}"));
+            }
+        }
+    }
+    let networks = value
+        .pointer("/NetworkSettings/Networks")
+        .and_then(|networks| networks.as_object())
+        .map(|networks| networks.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    if !networks.is_empty() {
+        lines.push("网络".to_string());
+        lines.extend(networks.into_iter().map(|name| format!("  {name}")));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn json_str(value: &Value, path: &[&str]) -> String {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn json_strings(value: &Value, path: &[&str]) -> Vec<String> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_ports(value: &Value) -> Vec<String> {
+    let Some(ports) = value
+        .pointer("/NetworkSettings/Ports")
+        .and_then(|ports| ports.as_object())
+    else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for (container, binds) in ports {
+        let Some(binds) = binds.as_array().filter(|binds| !binds.is_empty()) else {
+            result.push(container.clone());
+            continue;
+        };
+        for bind in binds {
+            let host_ip = bind.get("HostIp").and_then(|v| v.as_str()).unwrap_or("");
+            let host_port = bind.get("HostPort").and_then(|v| v.as_str()).unwrap_or("");
+            result.push(format!("{host_ip}:{host_port} → {container}"));
+        }
+    }
+    result.sort();
+    result
 }
 
 pub fn exec_spec(id: &str) -> Vec<String> {

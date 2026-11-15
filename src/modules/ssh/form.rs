@@ -10,7 +10,9 @@ pub struct SshForm {
     pub password: Entity<InputState>,
     pub identity: Entity<InputState>,
     pub extra: Entity<InputState>,
+    pub forwards: Entity<InputState>,
     pub color: Option<String>,
+    pub use_keyring: bool,
     pub testing: bool,
     pub test_status: Option<(bool, String)>,
 }

@@ -47,6 +47,18 @@ impl MintoolApp {
             .children(modules)
             .child(div().flex_1())
             .child(
+                div().id("module-notices").mb_1().child(
+                    Button::new("module-notices-button", "")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Icon)
+                        .icon("bell")
+                        .tooltip("通知历史")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_notice_history(window, cx)),
+                        ),
+                ),
+            )
+            .child(
                 div().id("module-theme").mb_1().child(
                     Button::new("toggle-theme", "")
                         .variant(ButtonVariant::Ghost)

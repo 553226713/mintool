@@ -60,6 +60,38 @@ impl MintoolApp {
         self.close_pane(key, pane, cx);
     }
 
+    /// Replace a dirty buffer with the version currently on disk.
+    pub(crate) fn reload_external_conflict(
+        &mut self,
+        key: &SessionKey,
+        pane: u64,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((_, known, state)) = self.previews.get_mut(&(key.clone(), pane)) {
+            *known = text.to_string();
+            state.update(cx, |view, cx| {
+                view.request_external_reload(text.to_string(), cx)
+            });
+        }
+    }
+
+    /// Keep the dirty buffer and remember which disk version was ignored.
+    pub(crate) fn keep_external_conflict(
+        &mut self,
+        key: &SessionKey,
+        pane: u64,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((_, _, state)) = self.previews.get_mut(&(key.clone(), pane)) {
+            state.update(cx, |view, cx| {
+                view.acknowledge_external(text);
+                cx.notify();
+            });
+        }
+    }
+
     pub(crate) fn close_pane(&mut self, key: &SessionKey, pane: u64, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspaces.get_mut(key) else {
             return;

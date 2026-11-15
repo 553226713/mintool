@@ -7,6 +7,7 @@ pub mod file_monitor;
 pub mod files;
 pub mod git;
 pub mod ime;
+pub mod keyring;
 pub mod mutex;
 pub mod storage;
 pub mod system_terminal;

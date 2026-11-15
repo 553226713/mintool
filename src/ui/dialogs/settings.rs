@@ -57,6 +57,34 @@ impl DialogContent for SettingsDialog {
                 )
                 .child(
                     div()
+                        .text_size(px(12.))
+                        .text_color(theme::muted())
+                        .child("终端滚动行数（200–20000）"),
+                )
+                .child(
+                    Input::new(&app.scrollback_input)
+                        .map(|mut input| {
+                            input.style().align_items = Some(AlignItems::Stretch);
+                            input
+                        })
+                        .w_full(),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme::muted())
+                        .child("Docker 自动刷新间隔（2–60 秒）"),
+                )
+                .child(
+                    Input::new(&app.refresh_input)
+                        .map(|mut input| {
+                            input.style().align_items = Some(AlignItems::Stretch);
+                            input
+                        })
+                        .w_full(),
+                )
+                .child(
+                    div()
                         .text_size(px(11.))
                         .text_color(theme::muted())
                         .child(format!("配置：{}", app.storage.root.display())),
@@ -101,6 +129,16 @@ impl DialogContent for SettingsDialog {
             state.select_all(&SelectAll, window, cx);
             state.set_value(font_size, window, cx);
         });
+        let refresh = app.settings.docker_refresh_seconds.to_string();
+        app.refresh_input.update(cx, |state, cx| {
+            state.select_all(&SelectAll, window, cx);
+            state.set_value(refresh, window, cx);
+        });
+        let scrollback = app.settings.terminal_scrollback.to_string();
+        app.scrollback_input.update(cx, |state, cx| {
+            state.select_all(&SelectAll, window, cx);
+            state.set_value(scrollback, window, cx);
+        });
     }
     fn submit(
         &self,
@@ -115,8 +153,25 @@ impl DialogContent for SettingsDialog {
         if !size.is_finite() || !(10.0..=28.0).contains(&size) {
             return Err(anyhow::anyhow!("字号应为 10 到 28 之间的数字"));
         }
+        let refresh = app.refresh_input.read(cx).content().parse::<u64>();
+        let Ok(refresh) = refresh else {
+            return Err(anyhow::anyhow!("刷新间隔应为 2 到 60 之间的数字"));
+        };
+        if !(2..=60).contains(&refresh) {
+            return Err(anyhow::anyhow!("刷新间隔应为 2 到 60 之间的数字"));
+        }
         app.settings.shell = value;
         app.settings.font_size = size;
+        let scrollback = app.scrollback_input.read(cx).content().parse::<usize>();
+        let Ok(scrollback) = scrollback else {
+            return Err(anyhow::anyhow!("滚动行数应为 200 到 20000 之间的数字"));
+        };
+        if !(200..=20_000).contains(&scrollback) {
+            return Err(anyhow::anyhow!("滚动行数应为 200 到 20000 之间的数字"));
+        }
+        app.settings.docker_refresh_seconds = refresh;
+        app.settings.terminal_scrollback = scrollback;
+        crate::services::terminal::set_scrollback(scrollback);
         app.settings.terminal_backend = app
             .terminal_select
             .read(cx)

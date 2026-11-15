@@ -39,6 +39,10 @@ pub struct FilePreview {
     editor_dirty: bool,
     save_error: Option<String>,
     saved_text: Option<String>,
+    /// Disk content waiting to be applied on the next paint (needs a `Window`).
+    pending_external: Option<String>,
+    /// External content the user chose to ignore for this dirty buffer.
+    acknowledged_external: Option<String>,
     _editor_subscription: Subscription,
 }
 impl FilePreview {
@@ -82,17 +86,36 @@ impl FilePreview {
             editor_dirty: false,
             save_error: None,
             saved_text: None,
+            pending_external: None,
+            acknowledged_external: None,
             _editor_subscription: editor_subscription,
         }
     }
     pub fn has_unsaved_changes(&self) -> bool {
         self.editor_dirty
     }
+    /// True when the disk changed under a dirty buffer and the user has not
+    /// already chosen to keep their version for this content.
+    pub fn external_change_needs_prompt(&self, disk_text: &str) -> bool {
+        self.editor_dirty
+            && self.text != disk_text
+            && self.acknowledged_external.as_deref() != Some(disk_text)
+    }
+    pub fn acknowledge_external(&mut self, disk_text: &str) {
+        self.acknowledged_external = Some(disk_text.to_string());
+    }
+    /// Apply the disk version after the next paint, when a `Window` is available.
+    pub fn request_external_reload(&mut self, disk_text: String, cx: &mut Context<Self>) {
+        self.pending_external = Some(disk_text);
+        cx.notify();
+    }
     /// Returns the text written to disk by the last save and clears the pending notice.
     pub fn take_saved_text(&mut self) -> Option<String> {
         self.saved_text.take()
     }
     pub fn save(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        self.acknowledged_external = None;
+        self.pending_external = None;
         let text = self.editor.read(cx).value().to_string();
         if text != self.text {
             if let Err(error) = files::write_text(&self.path, &text) {
@@ -120,6 +143,8 @@ impl FilePreview {
         if self.editor_dirty || text == self.text {
             return;
         }
+        self.acknowledged_external = None;
+        self.pending_external = None;
         self.text = text.clone();
         self.editor
             .update(cx, |state, cx| state.set_value(text, window, cx));
@@ -129,6 +154,14 @@ impl FilePreview {
 }
 impl Render for FilePreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(text) = self.pending_external.take() {
+            self.text = text.clone();
+            self.editor
+                .update(cx, |state, cx| state.set_value(text, window, cx));
+            self.editor_dirty = false;
+            self.acknowledged_external = None;
+            self.save_error = None;
+        }
         if self.rendered {
             if let Some(kind) = self.rich_kind {
                 let text_view = match kind {
@@ -274,7 +307,7 @@ impl Render for FilePreview {
     }
 }
 
-fn language_name(path: &Path) -> &'static str {
+pub(crate) fn language_name(path: &Path) -> &'static str {
     match path
         .extension()
         .and_then(|extension| extension.to_str())

@@ -3,7 +3,10 @@
 
 use crate::app::MintoolApp;
 use crate::services::file_actions::FileAction;
+use crate::ui::common::colors::{color_value, SWATCHES};
 use crate::ui::dialogs::DialogContent;
+use crate::ui::theme;
+use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use adabraka_ui::components::select::{Select, SelectOption};
 use gpui::prelude::*;
 use gpui::*;
@@ -19,6 +22,19 @@ pub enum ProjectDialog {
     Remove(String, String),
     RemoveGroup(String, String),
     File(FileAction),
+    SetCommand {
+        id: String,
+        name: String,
+        command: Option<String>,
+    },
+    SetColor {
+        id: String,
+        name: String,
+    },
+    AddTask {
+        id: String,
+        name: String,
+    },
 }
 
 impl ProjectDialog {
@@ -53,6 +69,9 @@ impl DialogContent for ProjectDialog {
             Self::Remove(..) => "移除项目",
             Self::RemoveGroup(..) => "删除分组",
             Self::File(action) => action.title(),
+            Self::SetCommand { .. } => "设置启动命令",
+            Self::SetColor { .. } => "设置项目颜色",
+            Self::AddTask { .. } => "添加项目任务",
         }
         .into()
     }
@@ -61,6 +80,7 @@ impl DialogContent for ProjectDialog {
             Self::RenameProject(_, name) | Self::RenameGroup(_, name) | Self::Locate(_, name) => {
                 name.clone()
             }
+            Self::SetCommand { command, .. } => command.clone().unwrap_or_default(),
             Self::File(FileAction::Rename(path)) => path
                 .file_name()
                 .unwrap_or_default()
@@ -78,9 +98,15 @@ impl DialogContent for ProjectDialog {
             | Self::File(
                 FileAction::Rename(_) | FileAction::NewFile(_) | FileAction::NewDirectory(_),
             ) => Some("名称"),
-            Self::MoveProject(..) | Self::Remove(..) | Self::RemoveGroup(..) | Self::File(_) => {
-                None
+            Self::SetCommand { .. } => {
+                Some("启动命令（留空禁用；每次新建终端时执行，之后进入交互 Shell）")
             }
+            Self::MoveProject(..)
+            | Self::Remove(..)
+            | Self::RemoveGroup(..)
+            | Self::File(_)
+            | Self::SetColor { .. }
+            | Self::AddTask { .. } => None,
         }
     }
     fn accepts_empty_input(&self) -> bool {
@@ -90,16 +116,24 @@ impl DialogContent for ProjectDialog {
                 | Self::RemoveGroup(..)
                 | Self::MoveProject(..)
                 | Self::File(FileAction::Trash(_))
+                | Self::SetCommand { .. }
+                | Self::SetColor { .. }
         )
+    }
+    fn has_actions(&self) -> bool {
+        !matches!(self, Self::SetColor { .. })
     }
     fn is_directory(&self) -> bool {
         matches!(self, Self::AddProject(_) | Self::Locate(..))
     }
     fn subject(&self) -> Option<String> {
         match self {
-            Self::Remove(_, name) | Self::RemoveGroup(_, name) | Self::MoveProject(_, name) => {
-                Some(name.clone())
-            }
+            Self::Remove(_, name)
+            | Self::RemoveGroup(_, name)
+            | Self::MoveProject(_, name)
+            | Self::SetCommand { name, .. }
+            | Self::SetColor { name, .. }
+            | Self::AddTask { name, .. } => Some(name.clone()),
             _ => None,
         }
     }
@@ -118,6 +152,11 @@ impl DialogContent for ProjectDialog {
                 "删除此分组，项目会移到未分组。保留磁盘文件和运行中的终端。".to_string()
             }
             Self::Locate(..) => "保留布局，并在新目录重新启动终端。".to_string(),
+            Self::SetCommand { .. } => {
+                "命令会在新建终端时执行，执行完进入交互 Shell；已有终端不受影响。".to_string()
+            }
+            Self::SetColor { .. } => "选择项目列表中的标记颜色。".to_string(),
+            Self::AddTask { .. } => "任务会在当前已打开的内置终端中执行。".to_string(),
             Self::File(FileAction::Trash(_)) => {
                 "将此项目及其内容移到系统回收站，可通过系统文件管理器恢复。".to_string()
             }
@@ -160,7 +199,71 @@ impl DialogContent for ProjectDialog {
                 .w_full()
         });
     }
-    fn render_extra(&self, app: &MintoolApp, _cx: &mut Context<MintoolApp>) -> Option<AnyElement> {
+    fn render_extra(&self, app: &MintoolApp, cx: &mut Context<MintoolApp>) -> Option<AnyElement> {
+        if let Self::SetColor { id, .. } = self {
+            let current = app
+                .modules
+                .projects
+                .registry
+                .projects
+                .iter()
+                .find(|project| &project.id == id)
+                .and_then(|project| project.color.clone());
+            let mut row = div().flex().items_center().gap_2();
+            for (index, (hex, _label)) in SWATCHES.iter().enumerate() {
+                let project_id = id.clone();
+                let value = hex.to_string();
+                row = row.child(
+                    div()
+                        .id(SharedString::from(format!("project-color-{index}")))
+                        .size(px(24.))
+                        .rounded_full()
+                        .bg(rgb(color_value(hex)))
+                        .cursor_pointer()
+                        .border_2()
+                        .border_color(if current.as_deref() == Some(*hex) {
+                            theme::text()
+                        } else {
+                            theme::panel()
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(project) = this
+                                .modules
+                                .projects
+                                .registry
+                                .projects
+                                .iter_mut()
+                                .find(|project| project.id == project_id)
+                            {
+                                project.color = Some(value.clone());
+                            }
+                            this.dialog = None;
+                            this.changed(cx);
+                        })),
+                );
+            }
+            let clear_id = id.clone();
+            row = row.child(
+                Button::new("clear-project-color", "无")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(project) = this
+                            .modules
+                            .projects
+                            .registry
+                            .projects
+                            .iter_mut()
+                            .find(|project| project.id == clear_id)
+                        {
+                            project.color = None;
+                        }
+                        this.dialog = None;
+                        this.changed(cx);
+                    })),
+            );
+            return Some(row.into_any_element());
+        }
         if !self.has_group_select() {
             return None;
         }
@@ -270,6 +373,39 @@ impl DialogContent for ProjectDialog {
             }
             Self::RemoveGroup(id, _) => {
                 app.modules.projects.registry.remove_group(id);
+                Ok(())
+            }
+            Self::SetCommand { id, .. } => {
+                let command = value.trim();
+                if let Some(project) = app
+                    .modules
+                    .projects
+                    .registry
+                    .projects
+                    .iter_mut()
+                    .find(|project| &project.id == id)
+                {
+                    project.run_command = (!command.is_empty()).then(|| command.to_string());
+                }
+                Ok(())
+            }
+            Self::SetColor { .. } => Ok(()),
+            Self::AddTask { id, .. } => {
+                let task = value.trim();
+                if !task.is_empty() {
+                    if let Some(project) = app
+                        .modules
+                        .projects
+                        .registry
+                        .projects
+                        .iter_mut()
+                        .find(|project| &project.id == id)
+                    {
+                        if !project.tasks.iter().any(|existing| existing == task) {
+                            project.tasks.push(task.to_string());
+                        }
+                    }
+                }
                 Ok(())
             }
         }

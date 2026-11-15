@@ -1,10 +1,12 @@
 use crate::modules::docker::DockerModule;
+use crate::modules::ssh::remote_edit::RemoteEdit;
 use crate::modules::{
-    projects::{model::ProjectRegistry, ProjectModule},
+    projects::{model::ProjectRegistry, quick_open::QuickOpen, ProjectModule},
     ssh::{SshForm, SshModule},
     ModuleId, Modules, SessionKey,
 };
 use crate::services::file_monitor::FileMonitor;
+use crate::shell::command_palette::CommandPalette;
 use crate::ui::file_preview::FilePreview;
 use crate::ui::image_preview::ImagePreview;
 use crate::workspace::{dock_workspace::DockWorkspace, layout::Axis, session::Workspace};
@@ -12,27 +14,31 @@ use crate::{
     model::settings::Settings,
     modules::projects::model::Project,
     services::{git::GitMonitor, mutex::lock_unpoisoned, storage::Storage},
-    ui::{dialogs::Dialog, terminal::TerminalView, theme},
+    ui::{
+        dialogs::{ConflictDialog, Dialog},
+        terminal::TerminalView,
+    },
 };
 use crate::{
     services::directory_browser::DirectoryBrowser,
     ui::directory_picker::{DirectoryPicker, DirectoryPickerEvent},
 };
 use adabraka_ui::components::{
-    input_state::{Enter as InputEnter, Escape as InputEscape, InputEvent, InputState},
-    resizable::{h_resizable, resizable_panel, ResizableState},
+    input_state::{InputEvent, InputState},
+    resizable::ResizableState,
     select::Select,
 };
 use adabraka_ui::navigation::menu::MenuItem;
 use gpui::*;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
 
 mod directory_result;
+mod render;
 
 pub use directory_result::DirectoryResult;
 pub struct MintoolApp {
@@ -54,14 +60,25 @@ pub struct MintoolApp {
     pub(crate) dock_closes: Vec<(SessionKey, u64)>,
     viewport_size: Option<Size<Pixels>>,
     pub(crate) menu: Option<(Point<Pixels>, Vec<MenuItem>)>,
-    monitor: GitMonitor,
+    pub(crate) monitor: GitMonitor,
     pub(crate) dialog_input: Entity<InputState>,
     pub(crate) dialog_focus: FocusHandle,
     pub(crate) font_input: Entity<InputState>,
+    pub(crate) refresh_input: Entity<InputState>,
+    pub(crate) scrollback_input: Entity<InputState>,
     pub(crate) dialog_generation: u64,
     pub(crate) pending_directory: Option<DirectoryResult>,
     pub(crate) dialog: Option<Dialog>,
     pub(crate) dialog_error: Option<String>,
+    /// External-change prompts waiting to be shown, one at a time.
+    pub(crate) pending_conflicts: VecDeque<ConflictDialog>,
+    pub(crate) quick_open: Option<QuickOpen>,
+    pub(crate) quick_open_subscription: Option<Subscription>,
+    pub(crate) command_palette: Option<CommandPalette>,
+    pub(crate) command_palette_subscription: Option<Subscription>,
+    pub(crate) notice_history: VecDeque<(String, Instant)>,
+    pub(crate) remote_edit: Option<RemoteEdit>,
+    transfer_tick: Option<Instant>,
     pub(crate) changes: bool,
     pub(crate) focus_pending: bool,
     pub(crate) quit_confirmed: bool,
@@ -85,11 +102,25 @@ impl MintoolApp {
         cx: &mut Context<Self>,
     ) -> Self {
         settings.font_size = settings.font_size.clamp(10., 28.);
+        crate::services::terminal::set_scrollback(settings.terminal_scrollback);
         let project_search = cx.new(|cx| InputState::new(cx).placeholder("搜索项目…"));
+        let commit_input = cx.new(|cx| InputState::new(cx).placeholder("提交说明…"));
+        let file_filter = cx.new(|cx| InputState::new(cx).placeholder("筛选文件…"));
+        let rename_input = cx.new(InputState::new);
         let ssh_search = cx.new(|cx| InputState::new(cx).placeholder("搜索 SSH 连接…"));
+        let ssh_remote_filter = cx.new(|cx| InputState::new(cx).placeholder("筛选远端文件…"));
         let docker_search = cx.new(|cx| InputState::new(cx).placeholder("搜索容器或镜像…"));
+        let docker_run_form = crate::modules::docker::DockerRunForm {
+            name: cx.new(|cx| InputState::new(cx).placeholder("容器名称（可选）")),
+            ports: cx.new(|cx| InputState::new(cx).placeholder("端口映射，例如 8080:80")),
+            env: cx.new(|cx| InputState::new(cx).placeholder("环境变量，例如 TZ=Asia/Shanghai")),
+            mounts: cx.new(|cx| InputState::new(cx).placeholder("挂载，例如 /tmp:/data")),
+            command: cx.new(|cx| InputState::new(cx).placeholder("启动命令（可选）")),
+        };
         let dialog_input = cx.new(InputState::new);
         let font_input = cx.new(InputState::new);
+        let refresh_input = cx.new(InputState::new);
+        let scrollback_input = cx.new(InputState::new);
         let project_group_select = cx.new(Select::new);
         let ssh_group_select = cx.new(Select::new);
         let terminal_select = cx.new(Select::new);
@@ -110,15 +141,36 @@ impl MintoolApp {
                 .new(|cx| InputState::new(cx).placeholder("密码（可选，会明文保存在配置中）")),
             identity: cx.new(|cx| InputState::new(cx).placeholder("私钥路径（可选）")),
             extra: cx.new(|cx| {
-                InputState::new(cx).placeholder("高级参数（可选，例如 -L 8080:localhost:80）")
+                InputState::new(cx).placeholder("高级参数（可选，例如 -o ProxyJump=bastion）")
+            }),
+            forwards: cx.new(|cx| {
+                InputState::new(cx).placeholder(
+                    "端口转发（可选，例如 8080:localhost:80 R:9000:localhost:9000 D:1080）",
+                )
             }),
             color: None,
+            use_keyring: false,
             testing: false,
             test_status: None,
         };
         let project_subscription = cx.subscribe(&project_search, |_, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
+            }
+        });
+        let commit_subscription = cx.subscribe(&commit_input, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        let filter_subscription = cx.subscribe(&file_filter, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        let rename_subscription = cx.subscribe(&rename_input, |this, _, event, cx| {
+            if matches!(event, InputEvent::Enter) {
+                this.commit_inline_rename(cx);
             }
         });
         let ssh_form_subscriptions: Vec<_> = [
@@ -129,6 +181,7 @@ impl MintoolApp {
             &ssh_form.password,
             &ssh_form.identity,
             &ssh_form.extra,
+            &ssh_form.forwards,
         ]
         .into_iter()
         .map(|input| {
@@ -143,6 +196,11 @@ impl MintoolApp {
         })
         .collect();
         let ssh_subscription = cx.subscribe(&ssh_search, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        let ssh_remote_filter_subscription = cx.subscribe(&ssh_remote_filter, |_, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
@@ -176,11 +234,20 @@ impl MintoolApp {
                     registry: projects,
                     search: project_search,
                     group_select: project_group_select,
+                    commit_input,
+                    file_filter,
+                    rename_input,
+                    selected_files: Default::default(),
+                    renaming: None,
+                    show_archived: false,
+                    sort_recent: false,
+                    filter_cache: None,
                     expanded: settings.projects_sidebar,
                 },
                 ssh: SshModule {
                     registry: ssh_registry,
                     search: ssh_search,
+                    remote_filter: ssh_remote_filter,
                     group_select: ssh_group_select,
                     form: ssh_form,
                     expanded: settings.ssh_sidebar,
@@ -188,10 +255,11 @@ impl MintoolApp {
                     remote: None,
                     local: None,
                     local_visible: false,
+                    sync_terminal: false,
                     transfer_status: None,
                     remote_previews: HashMap::new(),
                 },
-                docker: DockerModule::new(docker_search, settings.docker_sidebar),
+                docker: DockerModule::new(docker_search, settings.docker_sidebar, docker_run_form),
                 active: settings.active_module,
             },
             workspaces: HashMap::new(),
@@ -212,10 +280,20 @@ impl MintoolApp {
             dialog_input,
             dialog_focus: cx.focus_handle(),
             font_input,
+            refresh_input,
+            scrollback_input,
             dialog_generation: 0,
             pending_directory: None,
             dialog: None,
             dialog_error: None,
+            pending_conflicts: VecDeque::new(),
+            quick_open: None,
+            quick_open_subscription: None,
+            command_palette: None,
+            command_palette_subscription: None,
+            notice_history: VecDeque::new(),
+            remote_edit: None,
+            transfer_tick: None,
             changes: false,
             focus_pending: true,
             quit_confirmed: false,
@@ -227,7 +305,11 @@ impl MintoolApp {
             directory_subscription: None,
             _subscriptions: vec![
                 project_subscription,
+                commit_subscription,
+                filter_subscription,
+                rename_subscription,
                 ssh_subscription,
+                ssh_remote_filter_subscription,
                 docker_subscription,
                 dialog_subscription,
             ]
@@ -306,6 +388,7 @@ impl MintoolApp {
             }
         }
         if let Some(events) = self.file_monitor.poll() {
+            self.modules.projects.filter_cache = None;
             if let Some(id) = self
                 .modules
                 .projects
@@ -330,11 +413,53 @@ impl MintoolApp {
                     }
                 }
             }
+            if self.dialog.is_none() && self.pending_conflicts.is_empty() {
+                let mut found = Vec::new();
+                for ((session, pane), (path, _, state)) in &self.previews {
+                    if !events.rescan && !events.paths.contains(path) {
+                        continue;
+                    }
+                    let view = state.read(cx);
+                    if !view.has_unsaved_changes() {
+                        continue;
+                    }
+                    let Ok(disk) = crate::services::files::read_text(path) else {
+                        continue;
+                    };
+                    if view.external_change_needs_prompt(&disk) {
+                        found.push(ConflictDialog::new(
+                            session.clone(),
+                            *pane,
+                            path.clone(),
+                            disk,
+                        ));
+                    }
+                }
+                self.pending_conflicts.extend(found);
+            }
             if let Some(error) = events.error {
                 self.error = Some(error);
             }
             cx.notify();
         }
+        let transferring = self
+            .modules
+            .ssh
+            .transfer_status
+            .as_ref()
+            .is_some_and(|status| status.is_running());
+        if transferring {
+            if self
+                .transfer_tick
+                .is_none_or(|tick| tick.elapsed() >= Duration::from_millis(200))
+            {
+                self.transfer_tick = Some(Instant::now());
+                cx.notify();
+            }
+        } else {
+            self.transfer_tick = None;
+        }
+        self.auto_refresh_docker(cx);
         if self
             .dirty
             .is_some_and(|time| time.elapsed() >= Duration::from_millis(600))
@@ -491,6 +616,7 @@ impl MintoolApp {
     pub(crate) fn open_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self.modules.active == ModuleId::Projects {
             if let Some(key) = self.active_session_key() {
+                let project_root = self.current().map(|project| project.path);
                 if let Some(workspace) = self.workspaces.get_mut(&key) {
                     let anchor = if workspace
                         .state
@@ -505,6 +631,16 @@ impl MintoolApp {
                     };
                     let file_id = workspace.state.next_id;
                     workspace.state.next_id = workspace.state.next_id.saturating_add(1);
+                    if let Some(project_path) = &project_root {
+                        let mut parent = path.parent();
+                        while let Some(directory) = parent {
+                            if directory == project_path {
+                                break;
+                            }
+                            workspace.state.expanded.insert(directory.to_path_buf());
+                            parent = directory.parent();
+                        }
+                    }
                     workspace.state.files.insert(file_id, path);
                     self.dock_file_tabs.push((key, anchor, file_id));
                 }
@@ -539,259 +675,5 @@ impl Drop for MintoolApp {
         if let Err(error) = self.save() {
             eprintln!("配置保存失败：{error:#}");
         }
-    }
-}
-impl Render for MintoolApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let overlays = self.dialog.is_some()
-            || self.menu.is_some()
-            || self.directory_picker.is_some()
-            || cx.has_active_drag();
-        let active_session = self.active_session_key();
-        for ((session, id), terminal) in &self.system_terminals {
-            let selected = active_session.as_ref() == Some(session);
-            let active = self
-                .docks
-                .get(session)
-                .and_then(|dock| dock.panels.get(id))
-                .is_some_and(|panel| {
-                    panel
-                        .read(cx)
-                        .group
-                        .as_ref()
-                        .and_then(|group| group.upgrade())
-                        .and_then(|group| group.read(cx).active_panel(cx))
-                        .is_some_and(|active| active.panel_id(cx) == panel.entity_id())
-                });
-            let showing_terminal = self
-                .workspaces
-                .get_mut(session)
-                .and_then(|workspace| workspace.state.layout.find_mut(*id))
-                .is_some_and(|pane| !pane.showing_file);
-            terminal.update(cx, |view, cx| {
-                let allowed = !overlays && selected && active && showing_terminal;
-                if view.allowed != allowed {
-                    view.set_allowed(allowed);
-                    cx.notify();
-                }
-            });
-        }
-        if let Some(result) = self.pending_directory.take() {
-            if result.generation == self.dialog_generation && self.dialog.is_some() {
-                self.dialog_input.update(cx, |state, cx| {
-                    state.select_all(&adabraka_ui::components::input_state::SelectAll, window, cx);
-                    state.set_value(result.path.display().to_string(), window, cx);
-                });
-            }
-        }
-        let viewport = window.viewport_size();
-        if self.viewport_size != Some(viewport) {
-            // Reapply saved split ratios to the new available space. The component
-            // caches pixel sizes, which otherwise grow every panel equally.
-            self.panel_states.clear();
-            self.viewport_size = Some(viewport);
-        }
-        let (left_width, right_width) = self.settings.panel_widths(viewport.width.into());
-        let ssh_auxiliary = self.modules.active == ModuleId::Ssh;
-        let docker_auxiliary =
-            self.modules.active == ModuleId::Docker && self.modules.docker.opened.is_some();
-        let right_width = if ssh_auxiliary {
-            self.settings
-                .ssh_right_width
-                .clamp(360., (f32::from(viewport.width) * 0.55).max(360.))
-        } else if docker_auxiliary {
-            self.settings
-                .docker_right_width
-                .clamp(420., (f32::from(viewport.width) * 0.75).max(420.))
-        } else {
-            right_width
-        };
-        let docker_resources =
-            self.modules.active == ModuleId::Docker && self.modules.docker.show_resources;
-        if docker_resources {
-            self.ensure_docker_loaded(cx);
-        }
-        let session = if docker_resources {
-            None
-        } else {
-            self.current_session()
-        };
-        if let Some(session) = &session {
-            self.ensure_session(&session.key);
-        }
-        // Docker logs/exec live in the auxiliary panel so the resource list
-        // stays visible instead of replacing the whole workspace.
-        let docker_session = if docker_auxiliary {
-            let session = self.modules.docker_session();
-            if let Some(session) = &session {
-                self.ensure_session(&session.key);
-            }
-            session
-        } else {
-            None
-        };
-        let navigation = match self.modules.active {
-            ModuleId::Projects => self.render_navigation(window, cx),
-            ModuleId::Ssh => self.render_ssh_sidebar(window, cx),
-            ModuleId::Docker => self.render_docker_sidebar(window, cx),
-        };
-        let workspace = if docker_resources {
-            self.render_docker_resources(cx)
-        } else if let Some(session) = &session {
-            let project_missing = session.capabilities.files
-                && self.current().is_some_and(|project| !project.path.is_dir());
-            if project_missing {
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(theme::muted())
-                    .child("项目目录不存在，请右键项目重新定位")
-                    .into_any_element()
-            } else if let Some(workspace) = self.workspaces.get(&session.key) {
-                let layout = workspace.state.layout.clone();
-                self.render_layout(session, &layout, window, cx)
-            } else {
-                div().into_any_element()
-            }
-        } else {
-            self.empty_state(cx)
-        };
-        self.synchronize_file_watches();
-        if self.modules.active == ModuleId::Ssh {
-            self.ensure_remote_browser();
-        }
-        let auxiliary = match self.modules.active {
-            ModuleId::Projects => true,
-            ModuleId::Ssh => self.modules.ssh.opened.is_some(),
-            ModuleId::Docker => docker_auxiliary,
-        };
-        let explorer = if auxiliary {
-            Some(match self.modules.active {
-                ModuleId::Projects => self.render_explorer(cx),
-                ModuleId::Ssh => self.render_ssh_explorer(cx),
-                ModuleId::Docker => match &docker_session {
-                    Some(session) => self.render_docker_session_panel(session, window, cx),
-                    None => div().into_any_element(),
-                },
-            })
-        } else {
-            None
-        };
-        let sidebar_visible = self.modules.expanded(self.modules.active);
-        let panels_key = format!(
-            "app-panels-{}-{sidebar_visible}-{auxiliary}",
-            self.modules.active.slug()
-        );
-        let state = self.resize_state(
-            panels_key.clone(),
-            sidebar_visible,
-            auxiliary,
-            ssh_auxiliary,
-            docker_auxiliary,
-            cx,
-        );
-        let mut panels = h_resizable(SharedString::from(panels_key), state);
-        if sidebar_visible {
-            panels = panels.child(
-                resizable_panel()
-                    .size(px(left_width))
-                    .size_range(px(180.)..px((f32::from(viewport.width) * 0.25).min(400.)))
-                    .flex_none()
-                    .overflow_hidden()
-                    .child(navigation),
-            );
-        }
-        panels = panels.child(
-            resizable_panel()
-                .size_range(px(250.)..px(10000.))
-                .flex_1()
-                .overflow_hidden()
-                .child(workspace),
-        );
-        if let Some(explorer) = explorer {
-            let (min_right, max_right) = if ssh_auxiliary {
-                (px(360.), px((f32::from(viewport.width) * 0.60).max(360.)))
-            } else if docker_auxiliary {
-                (px(420.), px((f32::from(viewport.width) * 0.75).max(420.)))
-            } else {
-                (px(200.), px((f32::from(viewport.width) * 0.30).min(560.)))
-            };
-            panels = panels.child(
-                resizable_panel()
-                    .size(px(right_width))
-                    .size_range(min_right..max_right)
-                    .flex_none()
-                    .overflow_hidden()
-                    .child(explorer),
-            );
-        }
-        let body = div()
-            .size_full()
-            .flex()
-            .child(self.render_activity_bar(cx))
-            .child(div().flex_1().min_w_0().h_full().child(panels));
-        let status = self.status_bar(cx);
-        let dialog = self.render_dialog(cx);
-        let menu = self.render_context_menu(cx);
-        div()
-            .size_full()
-            .relative()
-            .flex()
-            .flex_col()
-            .bg(theme::background())
-            .text_color(theme::text())
-            .text_size(px(13.))
-            .font_family("Inter")
-            .capture_action(cx.listener(|this, _: &InputEscape, _, cx| {
-                if this.directory_picker.is_some() {
-                    this.directory_picker = None;
-                    this.directory_subscription = None;
-                    cx.notify();
-                    cx.stop_propagation();
-                } else if this.dialog.is_some() || this.menu.is_some() {
-                    this.dialog = None;
-                    this.menu = None;
-                    cx.notify();
-                    cx.stop_propagation();
-                } else {
-                    cx.propagate();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &InputEnter, _, cx| {
-                if this.directory_picker.is_some() {
-                    cx.propagate();
-                } else if this.dialog.is_some() {
-                    this.submit_dialog(cx);
-                    cx.stop_propagation();
-                } else {
-                    cx.propagate();
-                }
-            }))
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if this.directory_picker.is_some() && event.keystroke.key == "escape" {
-                    this.directory_picker = None;
-                    this.directory_subscription = None;
-                    cx.notify();
-                    cx.stop_propagation();
-                } else if this.dialog.is_some() && event.keystroke.key == "escape" {
-                    this.dialog = None;
-                    cx.notify();
-                    cx.stop_propagation();
-                } else if this.menu.is_some() {
-                    if event.keystroke.key == "escape" {
-                        this.menu = None;
-                        cx.notify();
-                    }
-                    cx.stop_propagation();
-                }
-            }))
-            .child(div().flex_1().min_h_0().child(body))
-            .child(status)
-            .children(dialog)
-            .children(self.directory_picker.clone())
-            .children(menu)
-            .children(self.render_toast(cx))
     }
 }

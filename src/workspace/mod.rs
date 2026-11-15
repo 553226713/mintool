@@ -83,6 +83,10 @@ impl MintoolApp {
         }
         self.modules.select(&key);
         self.settings.active_module = key.module;
+        if key.module == ModuleId::Projects {
+            self.modules.projects.selected_files.clear();
+            self.modules.projects.renaming = None;
+        }
         self.ensure_session(&key);
         self.focus_pending = true;
         self.dirty = Some(Instant::now());

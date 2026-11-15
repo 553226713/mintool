@@ -156,7 +156,7 @@ impl MintoolApp {
                     .gap_1()
                     .text_size(px(10.))
                     .text_color(theme::muted())
-                    .child("数据仅在手动刷新或操作后更新")
+                    .child("每 5 秒自动刷新，操作后立即更新")
                     .child("删除容器会同时停止容器进程"),
             )
             .into_any_element()
@@ -168,6 +168,7 @@ impl MintoolApp {
             DockerResource::Images => self.modules.docker.images.len(),
             DockerResource::Volumes => self.modules.docker.volumes.len(),
             DockerResource::Networks => self.modules.docker.networks.len(),
+            DockerResource::Compose => self.modules.docker.compose.len(),
         }
     }
 }
