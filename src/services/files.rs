@@ -22,6 +22,13 @@ struct CachedDocument {
     text: String,
 }
 
+/// Save text back to the same path, keeping the existing file permissions.
+pub fn write_text(path: &Path, text: &str) -> Result<()> {
+    let metadata = fs::metadata(path).with_context(|| format!("无法打开 {}", path.display()))?;
+    anyhow::ensure!(metadata.is_file(), "这不是普通文件");
+    fs::write(path, text.as_bytes()).with_context(|| format!("无法写入 {}", path.display()))
+}
+
 #[derive(Default)]
 pub struct FileCache {
     directories: HashMap<PathBuf, Arc<Vec<Entry>>>,

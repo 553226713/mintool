@@ -5,7 +5,7 @@ use std::{
     io::{Read, Write},
     num::NonZeroU16,
     panic::{catch_unwind, AssertUnwindSafe},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -14,6 +14,26 @@ use std::{
 };
 
 const SCROLLBACK_LINES: usize = 2000;
+
+/// Everything needed to start a terminal process, independent of the module
+/// that requested it (local project shell, SSH connection, future Docker).
+#[derive(Clone, Debug, Default)]
+pub struct TerminalSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub envs: Vec<(String, String)>,
+}
+impl TerminalSpec {
+    pub fn local_shell(path: PathBuf, shell: &str) -> Self {
+        Self {
+            program: shell.into(),
+            args: Vec::new(),
+            cwd: path,
+            envs: Vec::new(),
+        }
+    }
+}
 
 fn process_parser_byte(parser: &mut vt100::Parser, byte: u8) {
     if catch_unwind(AssertUnwindSafe(|| {
@@ -38,6 +58,9 @@ pub struct TerminalSession {
 }
 impl TerminalSession {
     pub fn spawn(path: &Path, shell: &str) -> Result<Self> {
+        Self::spawn_spec(&TerminalSpec::local_shell(path.to_path_buf(), shell))
+    }
+    pub fn spawn_spec(spec: &TerminalSpec) -> Result<Self> {
         let size = PtySize {
             rows: 24,
             cols: 80,
@@ -45,16 +68,22 @@ impl TerminalSession {
             pixel_height: 0,
         };
         let pair = native_pty_system().openpty(size)?;
-        let mut command = CommandBuilder::new(shell);
+        let mut command = CommandBuilder::new(&spec.program);
+        for argument in &spec.args {
+            command.arg(argument);
+        }
         let owner = uuid::Uuid::new_v4();
         command.env("MINTOOL_TERMINAL_ID", owner.to_string());
-        command.cwd(path);
+        command.cwd(&spec.cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        for (name, value) in &spec.envs {
+            command.env(name, value);
+        }
         let child = pair
             .slave
             .spawn_command(command)
-            .context("无法启动 Shell")?;
+            .context("无法启动终端进程")?;
         let processes = super::terminal_processes::TerminalProcesses::track(
             child.process_id().context("无法取得终端进程 ID")?,
             owner,

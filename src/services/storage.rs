@@ -1,4 +1,10 @@
-use crate::model::{layout::WorkspaceState, project::ProjectRegistry, settings::Settings};
+//! Generic, crash-safe JSON/TOML persistence.
+//!
+//! This layer deliberately knows nothing about feature modules. It exposes a
+//! locked root plus generic read/write helpers; each module owns its file
+//! names, loaders and savers.
+
+use crate::model::session::{ModuleId, SessionKey};
 use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
@@ -13,8 +19,8 @@ pub struct Storage {
 }
 impl Storage {
     pub fn new(root: PathBuf) -> Result<Self> {
-        fs::create_dir_all(root.join("workspaces"))?;
         fs::create_dir_all(root.join("logs"))?;
+        fs::create_dir_all(root.join("modules"))?;
         let lock = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -28,10 +34,37 @@ impl Storage {
         if let Some(root) = std::env::var_os("MINTOOL_CONFIG_DIR") {
             return Self::new(PathBuf::from(root));
         }
-        let home = std::env::var_os("HOME").context("找不到用户主目录 HOME")?;
-        Self::new(PathBuf::from(home).join(".mintool"))
+        Self::new(crate::services::desktop::home_dir().join(".mintool"))
     }
-    fn read<T: DeserializeOwned + Default>(&self, path: &Path) -> Result<T> {
+    pub fn module_dir(&self, module: ModuleId) -> PathBuf {
+        Self::module_root(&self.root, module)
+    }
+    fn module_root(root: &Path, module: ModuleId) -> PathBuf {
+        root.join("modules").join(module.slug())
+    }
+    pub fn registry_path(&self, module: ModuleId) -> PathBuf {
+        self.module_dir(module).join("registry.json")
+    }
+    pub fn session_path(&self, key: &SessionKey) -> Result<PathBuf> {
+        anyhow::ensure!(
+            !key.id.is_empty()
+                && key.id.len() <= 160
+                && key
+                    .id
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric()
+                        || character == '-'
+                        || character == '_'),
+            "会话 ID 无效"
+        );
+        Ok(self
+            .module_dir(key.module)
+            .join("sessions")
+            .join(format!("{}.json", key.id)))
+    }
+    /// Read JSON or TOML depending on the file extension, falling back to the
+    /// `.bak` copy and repairing a corrupt file when possible.
+    pub fn read_json<T: DeserializeOwned + Default>(&self, path: &Path) -> Result<T> {
         if !path.exists() {
             return Ok(T::default());
         }
@@ -66,7 +99,21 @@ impl Storage {
         }
     }
     pub fn write<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
-        let data = if path.extension().is_some_and(|e| e == "toml") {
+        self.write_inner(path, value, false)
+    }
+    /// Same as [`Self::write`], but keeps the file readable by the owner only.
+    pub fn write_private<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
+        self.write_inner(path, value, true)
+    }
+    fn write_inner<T: Serialize>(&self, path: &Path, value: &T, private: bool) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let data = if path
+            .extension()
+            .is_some_and(|extension| extension == "toml")
+        {
             toml::to_string_pretty(value)?.into_bytes()
         } else {
             serde_json::to_vec_pretty(value)?
@@ -75,6 +122,9 @@ impl Storage {
         let mut file = fs::File::create(&temp)?;
         file.write_all(&data)?;
         file.sync_all()?;
+        if private {
+            fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))?;
+        }
         if path.exists() {
             fs::copy(
                 path,
@@ -85,24 +135,10 @@ impl Storage {
             )?;
         }
         fs::rename(temp, path)?;
+        if private {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
-    }
-    pub fn settings(&self) -> Result<Settings> {
-        self.read(&self.root.join("config.toml"))
-    }
-    pub fn projects(&self) -> Result<ProjectRegistry> {
-        self.read(&self.root.join("projects.json"))
-    }
-    pub fn workspace(&self, id: &str) -> Result<WorkspaceState> {
-        self.read(&self.workspace_path(id)?)
-    }
-    pub fn workspace_path(&self, id: &str) -> Result<PathBuf> {
-        uuid::Uuid::parse_str(id).context("项目 ID 无效")?;
-        Ok(self.root.join("workspaces").join(format!("{id}.json")))
-    }
-    pub fn save(&self, settings: &Settings, projects: &ProjectRegistry) -> Result<()> {
-        self.write(&self.root.join("config.toml"), settings)?;
-        self.write(&self.root.join("projects.json"), projects)
     }
 }
 

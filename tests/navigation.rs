@@ -1,4 +1,5 @@
-use mintool::model::{project::ProjectRegistry, settings::Settings};
+use mintool::model::settings::Settings;
+use mintool::modules::projects::model::ProjectRegistry;
 use std::fs;
 
 #[test]

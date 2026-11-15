@@ -1,5 +1,5 @@
-use mintool::model::dock_layout::DockLayout;
-use mintool::model::layout::{Axis, Layout};
+use mintool::workspace::dock_layout::DockLayout;
+use mintool::workspace::layout::{Axis, Layout};
 
 #[test]
 fn dock_tabs_preserve_order_active_tab_and_all_pane_ids_on_reload() {

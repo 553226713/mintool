@@ -6,6 +6,13 @@ use std::{
 
 use anyhow::{Context, Result};
 
+/// The user's home directory, tolerating a missing `HOME`.
+pub fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/"))
+}
+
 pub struct Desktop;
 impl Desktop {
     pub fn open_directory(path: &Path) -> anyhow::Result<()> {

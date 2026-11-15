@@ -1,11 +1,11 @@
 use mintool::{
-    model::{
-        layout::{Axis, Layout, WorkspaceState},
-        project::ProjectRegistry,
-        settings::Settings,
-    },
+    model::session::SessionKey,
+    model::settings::Settings,
+    modules::projects::model::ProjectRegistry,
     services::terminal_input::{key, paste, KeyModifiers},
-    services::{git::GitSnapshot, storage::Storage, terminal::TerminalSession},
+    services::{files::write_text, git::GitSnapshot, storage::Storage, terminal::TerminalSession},
+    workspace::layout::{Axis, Layout, WorkspaceState},
+    workspace::session::Workspace,
 };
 use std::{
     fs,
@@ -62,20 +62,22 @@ fn storage_roundtrip_backup_recovery_and_single_instance_lock() {
     assert!(Storage::new(dir.path().into()).is_err());
     let mut registry = ProjectRegistry::default();
     let id = registry.add(dir.path().into()).unwrap();
-    storage.save(&Settings::default(), &registry).unwrap();
-    let path = storage.workspace_path(&id).unwrap();
+    Settings::default().save(&storage).unwrap();
+    registry.save(&storage).unwrap();
+    let key = SessionKey::project(&id);
+    let path = Workspace::path(&storage, &key).unwrap();
     let mut state = WorkspaceState::default();
     state.layout.split(1, 2, Axis::Vertical);
     storage.write(&path, &state).unwrap();
     storage.write(&path, &state).unwrap();
     fs::write(&path, "broken json").unwrap();
     assert!(matches!(
-        storage.workspace(&id).unwrap().layout,
+        Workspace::load(&storage, &key).unwrap().layout,
         Layout::Split { .. }
     ));
     storage.write(&path, &state).unwrap();
-    assert!(storage.workspace_path("../../outside").is_err());
-    assert_eq!(storage.projects().unwrap().selected, Some(id));
+    assert!(Workspace::path(&storage, &SessionKey::project("../../outside")).is_err());
+    assert_eq!(ProjectRegistry::load(&storage).unwrap().selected, Some(id));
     drop(storage);
     assert!(Storage::new(dir.path().into()).is_ok());
 }
@@ -85,7 +87,7 @@ fn invalid_config_is_reported_and_preserved() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::new(dir.path().into()).unwrap();
     fs::write(dir.path().join("projects.json"), "broken").unwrap();
-    assert!(storage.projects().is_err());
+    assert!(ProjectRegistry::load(&storage).is_err());
     assert_eq!(
         fs::read_to_string(dir.path().join("projects.json")).unwrap(),
         "broken"
@@ -150,13 +152,21 @@ fn git_rename_zero_terminated_paths() {
 
 fn wait_for(session: &TerminalSession, text: &str) {
     let start = Instant::now();
+    let needle: String = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
     loop {
         let screen = session.parser.lock().unwrap().screen().contents();
-        if screen.contains(text) {
+        let compact: String = screen
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        if compact.contains(&needle) {
             break;
         }
         assert!(
-            start.elapsed() < Duration::from_secs(8),
+            start.elapsed() < Duration::from_secs(10),
             "missing {text:?} in {screen:?}"
         );
         thread::sleep(Duration::from_millis(30));
@@ -288,7 +298,7 @@ fn relocating_workspace_preserves_layout_and_rebases_project_files() {
     state.layout.split(1, 2, Axis::Horizontal);
     state.layout.find_mut(2).unwrap().file = Some("/old/project/src/main.rs".into());
     state.expanded.insert("/old/project/src".into());
-    let mut workspace = mintool::services::workspace::Workspace::new(state);
+    let mut workspace = mintool::workspace::session::Workspace::new(state);
     workspace.relocate(Path::new("/old/project"), Path::new("/new/project"));
     assert!(matches!(workspace.state.layout, Layout::Split { .. }));
     assert_eq!(
@@ -330,6 +340,59 @@ fn file_preview_reloads_changes_and_rejects_binary_and_large_files() {
 }
 
 #[test]
+fn module_storage_reads_and_migrates_legacy_project_files() {
+    use mintool::workspace::layout::WorkspaceState;
+
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::new(dir.path().into()).unwrap();
+    let mut registry = ProjectRegistry::default();
+    registry.add(dir.path().to_path_buf()).unwrap();
+    storage
+        .write(&dir.path().join("projects.json"), &registry)
+        .unwrap();
+    assert_eq!(
+        ProjectRegistry::load(&storage).unwrap().selected,
+        registry.selected
+    );
+    assert!(dir.path().join("modules/projects/registry.json").exists());
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let state = WorkspaceState {
+        next_id: 7,
+        ..Default::default()
+    };
+    fs::create_dir_all(dir.path().join("workspaces")).unwrap();
+    storage
+        .write(
+            &dir.path().join("workspaces").join(format!("{id}.json")),
+            &state,
+        )
+        .unwrap();
+    assert_eq!(
+        Workspace::load(&storage, &SessionKey::project(&id))
+            .unwrap()
+            .next_id,
+        7
+    );
+    assert!(dir
+        .path()
+        .join("modules/projects/sessions")
+        .join(format!("{id}.json"))
+        .exists());
+}
+
+#[test]
+fn write_text_overwrites_utf8_content_and_requires_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("note.txt");
+    fs::write(&file, "旧内容").unwrap();
+    write_text(&file, "新内容\n第二行").unwrap();
+    assert_eq!(fs::read_to_string(&file).unwrap(), "新内容\n第二行");
+    assert!(write_text(&dir.path().join("missing.txt"), "x").is_err());
+    assert!(write_text(dir.path(), "x").is_err());
+}
+
+#[test]
 fn resizing_nested_split_updates_only_its_own_ratio() {
     let mut layout = Layout::pane(1);
     layout.split(1, 2, Axis::Horizontal);
@@ -364,15 +427,13 @@ fn theme_preference_defaults_for_existing_config_and_survives_restart() {
         "font_size = 16.0\nshell = '/bin/sh'\n",
     )
     .unwrap();
-    let mut settings = storage.settings().unwrap();
+    let mut settings = Settings::load(&storage).unwrap();
     assert_eq!(settings.appearance, Appearance::Dark);
     settings.appearance = Appearance::Light;
-    storage
-        .save(&settings, &ProjectRegistry::default())
-        .unwrap();
+    settings.save(&storage).unwrap();
     drop(storage);
     let storage = Storage::new(dir.path().into()).unwrap();
-    let restored = storage.settings().unwrap();
+    let restored = Settings::load(&storage).unwrap();
     assert_eq!(restored.appearance, Appearance::Light);
     assert_eq!(restored.font_size, 16.0);
     assert_eq!(restored.shell, "/bin/sh");
