@@ -1,4 +1,4 @@
-use super::{SessionCapabilities, SessionKey, TerminalLauncher};
+use super::{SessionCapabilities, SessionKey, SessionSurface, TerminalLauncher};
 use std::path::PathBuf;
 
 /// A module-neutral description of an open workspace.
@@ -9,6 +9,7 @@ pub struct SessionView {
     pub subtitle: String,
     pub cwd: PathBuf,
     pub launcher: TerminalLauncher,
+    pub surface: SessionSurface,
     pub capabilities: SessionCapabilities,
     /// Command run before the interactive shell for local project terminals.
     pub run_command: Option<String>,

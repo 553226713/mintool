@@ -107,6 +107,25 @@ impl MintoolApp {
             self.changed(cx);
             return;
         }
+        let query = workspace.state.queries.remove(&pane).is_some();
+        if query {
+            self.modules.database.drop_query(key, pane);
+            self.dock_file_tabs
+                .retain(|(session, _, query_id)| session != key || *query_id != pane);
+            let in_layout = workspace.state.layout.find(pane).is_some();
+            if !in_layout || workspace.state.layout.close(pane) {
+                self.dock_closes.push((key.clone(), pane));
+                if workspace.state.focused == pane {
+                    workspace.state.focused = workspace.state.layout.first_id();
+                }
+            } else if let Some(pane) = workspace.state.layout.find_mut(pane) {
+                pane.terminal_closed = true;
+                pane.terminal = false;
+            }
+            self.dirty_workspaces.insert(key.clone());
+            self.changed(cx);
+            return;
+        }
         if workspace.state.layout.close(pane) {
             self.dock_closes.push((key.clone(), pane));
             if workspace.state.focused == pane {

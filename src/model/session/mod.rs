@@ -9,6 +9,7 @@ mod key;
 mod launcher;
 mod module_id;
 mod ssh_launch;
+mod surface;
 mod view;
 
 pub use capabilities::SessionCapabilities;
@@ -16,4 +17,5 @@ pub use key::SessionKey;
 pub use launcher::TerminalLauncher;
 pub use module_id::{ModuleId, MODULES};
 pub use ssh_launch::SshLaunch;
+pub use surface::SessionSurface;
 pub use view::SessionView;

@@ -1,6 +1,7 @@
 use super::model::SshConnection;
 use crate::model::session::{
-    ModuleId, SessionCapabilities, SessionKey, SessionView, SshLaunch, TerminalLauncher,
+    ModuleId, SessionCapabilities, SessionKey, SessionSurface, SessionView, SshLaunch,
+    TerminalLauncher,
 };
 use std::path::PathBuf;
 
@@ -61,6 +62,7 @@ impl SessionView {
             subtitle: connection.display_address(),
             cwd: home_dir(),
             launcher: TerminalLauncher::Ssh(launched),
+            surface: SessionSurface::Terminal,
             capabilities: SessionCapabilities::SSH,
             run_command: None,
         }

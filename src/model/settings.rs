@@ -21,6 +21,7 @@ pub struct Settings {
     pub projects_sidebar: bool,
     pub ssh_sidebar: bool,
     pub docker_sidebar: bool,
+    pub database_sidebar: bool,
 }
 impl Settings {
     pub fn load(storage: &Storage) -> Result<Self> {
@@ -34,6 +35,7 @@ impl Settings {
             ModuleId::Projects => self.projects_sidebar = expanded,
             ModuleId::Ssh => self.ssh_sidebar = expanded,
             ModuleId::Docker => self.docker_sidebar = expanded,
+            ModuleId::Database => self.database_sidebar = expanded,
         }
     }
     /// Keep saved sidebar widths when space permits, while reserving room for
@@ -64,6 +66,7 @@ impl Default for Settings {
             projects_sidebar: true,
             ssh_sidebar: true,
             docker_sidebar: true,
+            database_sidebar: true,
         }
     }
 }

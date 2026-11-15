@@ -1,5 +1,5 @@
 use crate::model::session::SessionKey;
-use crate::model::session::{SessionView, TerminalLauncher};
+use crate::model::session::{SessionSurface, SessionView, TerminalLauncher};
 use crate::services::terminal::TerminalSession;
 use crate::ui::terminal::TerminalView;
 use crate::ui::{
@@ -43,7 +43,9 @@ impl MintoolApp {
         let body_key = session.key.clone();
         let restart_key = session.key.clone();
         let retry_key = session.key.clone();
-        let body = if let Some(remote) = &pane.remote {
+        let body = if session.surface == SessionSurface::Query {
+            self.render_database_pane(session, pane, focused, window, cx)
+        } else if let Some(remote) = &pane.remote {
             self.modules
                 .render_remote_preview(session, pane.id, remote, bounds.1.max(34.), cx)
         } else if pane.showing_file {

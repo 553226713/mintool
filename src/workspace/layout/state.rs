@@ -1,4 +1,5 @@
 use super::{Layout, Pane};
+use crate::model::query::QueryPane;
 use crate::workspace::dock_layout::DockLayout;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -19,6 +20,9 @@ pub struct WorkspaceState {
     /// Remote SFTP file tabs, keyed by pane id (SSH sessions only).
     #[serde(default)]
     pub remote_files: BTreeMap<u64, String>,
+    /// SQL query documents, keyed by pane id (database sessions only).
+    #[serde(default)]
+    pub queries: BTreeMap<u64, QueryPane>,
 }
 impl Default for WorkspaceState {
     fn default() -> Self {
@@ -30,19 +34,50 @@ impl Default for WorkspaceState {
             expanded: BTreeSet::new(),
             files: BTreeMap::new(),
             remote_files: BTreeMap::new(),
+            queries: BTreeMap::new(),
         }
     }
 }
 impl WorkspaceState {
+    pub fn query() -> Self {
+        let mut state = Self {
+            layout: Layout::query_pane(1),
+            ..Self::default()
+        };
+        state.queries.insert(1, QueryPane::new("查询 1"));
+        state
+    }
+
+    pub fn add_query(&mut self, id: u64) {
+        self.queries
+            .entry(id)
+            .or_insert_with(|| QueryPane::new(format!("查询 {id}")));
+    }
+
     pub fn pane_ids(&self) -> Vec<u64> {
         let mut ids = Vec::new();
         self.layout.ids(&mut ids);
         ids.extend(self.files.keys().copied());
         ids.extend(self.remote_files.keys().copied());
+        for id in self.queries.keys().copied() {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
         ids
     }
 
     pub fn file_pane(&self, id: u64) -> Option<Pane> {
+        if self.queries.contains_key(&id) {
+            return Some(Pane {
+                id,
+                file: None,
+                remote: None,
+                showing_file: true,
+                terminal: false,
+                terminal_closed: false,
+            });
+        }
         if let Some(path) = self.files.get(&id).cloned() {
             return Some(Pane {
                 id,

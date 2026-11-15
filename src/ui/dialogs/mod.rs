@@ -12,6 +12,7 @@ mod settings;
 mod unsaved;
 
 use crate::app::MintoolApp;
+use crate::modules::database::dialogs::DatabaseDialog;
 use crate::modules::docker::dialogs::DockerDialog;
 use crate::modules::projects::dialogs::ProjectDialog;
 use crate::modules::ssh::dialogs::SshDialog;
@@ -32,6 +33,7 @@ pub enum Dialog {
     Project(ProjectDialog),
     Ssh(SshDialog),
     Docker(DockerDialog),
+    Database(DatabaseDialog),
     Settings,
     Unsaved(UnsavedDialog),
     Conflict(ConflictDialog),
@@ -121,6 +123,7 @@ impl Dialog {
             Dialog::Project(dialog) => dialog,
             Dialog::Ssh(dialog) => dialog,
             Dialog::Docker(dialog) => dialog,
+            Dialog::Database(dialog) => dialog,
             Dialog::Settings => settings::dialog(),
             Dialog::Unsaved(dialog) => dialog,
             Dialog::Conflict(dialog) => dialog,

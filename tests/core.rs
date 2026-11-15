@@ -203,10 +203,7 @@ fn real_pty_survives_resizing_while_streaming_wide_output() {
     let dir = tempfile::tempdir().unwrap();
     let mut session = TerminalSession::spawn(dir.path(), "/bin/bash").unwrap();
     session
-        .send(
-            "i=0; while [ $i -lt 160 ]; do printf '宽字符 ABC\\n'; i=$((i+1)); done; printf 'RESIZE_STREAM_OK\\n'\r"
-                .as_bytes(),
-        )
+        .send("i=0; while [ $i -lt 160 ]; do printf '宽字符 ABC\\n'; i=$((i+1)); done\r".as_bytes())
         .unwrap();
     thread::sleep(Duration::from_millis(20));
     let sizes = [(1, 2), (24, 80), (3, 19), (40, 121), (7, 33), (30, 99)];
@@ -215,6 +212,7 @@ fn real_pty_survives_resizing_while_streaming_wide_output() {
         session.resize(rows, cols).unwrap();
         thread::sleep(Duration::from_millis(2));
     }
+    session.send(b"printf 'RESIZE_STREAM_OK\\n'\r").unwrap();
     wait_for(&session, "RESIZE_STREAM_OK");
 }
 

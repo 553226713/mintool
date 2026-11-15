@@ -33,6 +33,16 @@ impl Layout {
             terminal_closed: true,
         })
     }
+    pub fn query_pane(id: u64) -> Self {
+        Self::Pane(Pane {
+            id,
+            file: None,
+            remote: None,
+            showing_file: false,
+            terminal: false,
+            terminal_closed: false,
+        })
+    }
     pub fn first_id(&self) -> u64 {
         match self {
             Self::Pane(p) => p.id,

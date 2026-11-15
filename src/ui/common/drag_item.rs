@@ -7,6 +7,8 @@ pub enum DragKind {
     Group(String),
     SshConnection(String),
     SshGroup(String),
+    DatabaseConnection(String),
+    DatabaseGroup(String),
     Files(Vec<PathBuf>),
 }
 #[derive(Clone)]

@@ -23,4 +23,7 @@ impl SessionKey {
     pub fn docker(id: impl Into<String>) -> Self {
         Self::new(ModuleId::Docker, id)
     }
+    pub fn database(id: impl Into<String>) -> Self {
+        Self::new(ModuleId::Database, id)
+    }
 }

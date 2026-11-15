@@ -124,6 +124,7 @@ impl MintoolApp {
     }
     pub(crate) fn remove_session(&mut self, key: &SessionKey, cx: &mut Context<Self>) {
         self.stop_session_terminals(key, cx);
+        self.modules.database.drop_session(key);
         self.terminals.retain(|(session, _), _| session != key);
         self.system_terminals
             .retain(|(session, _), _| session != key);

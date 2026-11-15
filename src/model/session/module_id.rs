@@ -6,6 +6,7 @@ pub enum ModuleId {
     Projects,
     Ssh,
     Docker,
+    Database,
 }
 
 impl ModuleId {
@@ -14,6 +15,7 @@ impl ModuleId {
             Self::Projects => "projects",
             Self::Ssh => "ssh",
             Self::Docker => "docker",
+            Self::Database => "database",
         }
     }
     pub fn title(self) -> &'static str {
@@ -21,6 +23,7 @@ impl ModuleId {
             Self::Projects => "项目",
             Self::Ssh => "SSH",
             Self::Docker => "Docker",
+            Self::Database => "数据库",
         }
     }
     pub fn icon(self) -> &'static str {
@@ -28,6 +31,7 @@ impl ModuleId {
             Self::Projects => "folder-closed",
             Self::Ssh => "square-terminal",
             Self::Docker => "docker",
+            Self::Database => "file-database",
         }
     }
     pub fn has_aux_panel(self) -> bool {
@@ -35,4 +39,9 @@ impl ModuleId {
     }
 }
 
-pub const MODULES: [ModuleId; 3] = [ModuleId::Projects, ModuleId::Ssh, ModuleId::Docker];
+pub const MODULES: [ModuleId; 4] = [
+    ModuleId::Projects,
+    ModuleId::Ssh,
+    ModuleId::Docker,
+    ModuleId::Database,
+];

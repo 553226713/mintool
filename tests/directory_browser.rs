@@ -23,6 +23,10 @@ fn directory_picker_lists_hidden_directories_and_follows_directory_links() {
     assert!(names.contains(&".hidden".to_string()));
     assert!(names.contains(&"folder with spaces".to_string()));
     assert!(!names.contains(&"file".to_string()));
+    assert!(browser
+        .files
+        .iter()
+        .any(|path| path.file_name().unwrap() == "file"));
     #[cfg(unix)]
     {
         assert!(names.contains(&"linked directory".to_string()));
@@ -37,6 +41,14 @@ fn directory_picker_lists_hidden_directories_and_follows_directory_links() {
             .join("folder with spaces")
             .canonicalize()
             .unwrap()
+    );
+    assert_eq!(
+        browser.resolve_file("file").unwrap(),
+        root.path().join("file").canonicalize().unwrap()
+    );
+    assert_eq!(
+        browser.resolve_new_file("new.sqlite").unwrap(),
+        root.path().canonicalize().unwrap().join("new.sqlite")
     );
 }
 

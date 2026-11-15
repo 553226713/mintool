@@ -4,12 +4,14 @@
 //! `workspace` layer only deals with `SessionKey` and `SessionView`.
 
 pub mod common;
+pub mod database;
 pub mod docker;
 pub mod projects;
 pub mod ssh;
 
 use crate::model::session::{SessionView, TerminalLauncher};
 use crate::services::storage::Storage;
+use database::DatabaseModule;
 use docker::DockerModule;
 use projects::ProjectModule;
 use ssh::SshModule;
@@ -20,6 +22,7 @@ pub struct Modules {
     pub projects: ProjectModule,
     pub ssh: SshModule,
     pub docker: DockerModule,
+    pub database: DatabaseModule,
     pub active: ModuleId,
 }
 impl Modules {
@@ -28,6 +31,7 @@ impl Modules {
             ModuleId::Projects => self.projects.expanded,
             ModuleId::Ssh => self.ssh.expanded,
             ModuleId::Docker => self.docker.expanded,
+            ModuleId::Database => self.database.expanded,
         }
     }
     pub fn set_expanded(&mut self, module: ModuleId, expanded: bool) {
@@ -35,6 +39,7 @@ impl Modules {
             ModuleId::Projects => self.projects.expanded = expanded,
             ModuleId::Ssh => self.ssh.expanded = expanded,
             ModuleId::Docker => self.docker.expanded = expanded,
+            ModuleId::Database => self.database.expanded = expanded,
         }
     }
     /// Session identity for the active module, resolved entirely inside the
@@ -53,6 +58,12 @@ impl Modules {
                 .opened
                 .as_ref()
                 .map(|(id, view)| SessionKey::docker(docker::model::session_id(id, *view))),
+            ModuleId::Database => self
+                .database
+                .registry
+                .selected
+                .clone()
+                .map(SessionKey::database),
         }
     }
     /// Neutral description of an open session, built by its owning module.
@@ -96,6 +107,13 @@ impl Modules {
                     None
                 }
             }
+            ModuleId::Database => self
+                .database
+                .registry
+                .connections
+                .iter()
+                .find(|connection| connection.id == key.id)
+                .map(SessionView::database),
         }
     }
     /// Select the module-owned record behind a session key without any
@@ -131,6 +149,9 @@ impl Modules {
                 if let Some((container_id, _)) = docker::model::parse_session_id(&key.id) {
                     self.docker.selected = Some(container_id);
                 }
+            }
+            ModuleId::Database => {
+                self.database.registry.selected = Some(key.id.clone());
             }
         }
         self.active = key.module;
@@ -171,6 +192,7 @@ impl Modules {
     pub fn save(&self, storage: &Storage) -> anyhow::Result<()> {
         self.projects.registry.save(storage)?;
         self.ssh.registry.save(storage)?;
+        self.database.registry.save(storage)?;
         Ok(())
     }
 }

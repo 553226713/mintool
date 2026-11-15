@@ -21,6 +21,9 @@ tempfile = "3"
 gpui-component = { path = "vendor/gpui-component" }
 gpui-component-assets = { path = "vendor/gpui-component-assets" }
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "dds", "exr", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
+mysql = { version = "28", default-features = false, features = ["minimal-rust"] }
+postgres = "0.19"
+rusqlite = { version = "0.42", features = ["bundled"] }
 raw-window-handle = "0.6"
 x11rb = "0.13"
 x11-clipboard = "0.9"

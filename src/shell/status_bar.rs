@@ -34,6 +34,10 @@ impl MintoolApp {
                     self.modules.docker.containers.len()
                 )
             }
+            ModuleId::Database => session
+                .as_ref()
+                .map(|session| format!("数据库 · {}", session.subtitle))
+                .unwrap_or_else(|| "未选择数据库连接".into()),
         };
         let terminals = workspace.map_or(0, |workspace| workspace.terminals.len())
             + key.as_ref().map_or(0, |key| {

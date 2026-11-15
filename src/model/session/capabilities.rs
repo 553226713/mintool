@@ -20,4 +20,9 @@ impl SessionCapabilities {
         git: false,
         explorer: false,
     };
+    pub const DATABASE: Self = Self {
+        files: false,
+        git: false,
+        explorer: false,
+    };
 }

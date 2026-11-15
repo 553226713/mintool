@@ -1,6 +1,7 @@
 use crate::modules::docker::DockerModule;
 use crate::modules::ssh::remote_edit::RemoteEdit;
 use crate::modules::{
+    database::{model::DatabaseRegistry, DatabaseModule},
     projects::{model::ProjectRegistry, quick_open::QuickOpen, ProjectModule},
     ssh::{SshForm, SshModule},
     ModuleId, Modules, SessionKey,
@@ -21,12 +22,12 @@ use crate::{
 };
 use crate::{
     services::directory_browser::DirectoryBrowser,
-    ui::directory_picker::{DirectoryPicker, DirectoryPickerEvent},
+    ui::directory_picker::{DirectoryPicker, DirectoryPickerEvent, DirectoryPickerMode},
 };
 use adabraka_ui::components::{
     input_state::{InputEvent, InputState},
     resizable::ResizableState,
-    select::Select,
+    select::{Select, SelectOption},
 };
 use adabraka_ui::navigation::menu::MenuItem;
 use gpui::*;
@@ -40,7 +41,7 @@ use std::{
 mod directory_result;
 mod render;
 
-pub use directory_result::DirectoryResult;
+pub use directory_result::{DirectoryResult, DirectoryTarget};
 pub struct MintoolApp {
     pub(crate) storage: Storage,
     pub(crate) settings: Settings,
@@ -110,6 +111,31 @@ impl MintoolApp {
         let ssh_search = cx.new(|cx| InputState::new(cx).placeholder("搜索 SSH 连接…"));
         let ssh_remote_filter = cx.new(|cx| InputState::new(cx).placeholder("筛选远端文件…"));
         let docker_search = cx.new(|cx| InputState::new(cx).placeholder("搜索容器或镜像…"));
+        let database_search = cx.new(|cx| InputState::new(cx).placeholder("搜索数据库连接…"));
+        let database_engine_select = cx.new(|cx| {
+            Select::new(cx)
+                .options(
+                    crate::modules::database::model::DatabaseEngine::ALL
+                        .into_iter()
+                        .map(|engine| SelectOption::new(engine, engine.label()))
+                        .collect(),
+                )
+                .selected_index(Some(0))
+        });
+        let database_group_select = cx.new(Select::new);
+        let database_form = crate::modules::database::form::DatabaseForm {
+            engine: database_engine_select,
+            group: database_group_select,
+            name: cx.new(|cx| InputState::new(cx).placeholder("连接名称")),
+            path: cx.new(|cx| InputState::new(cx).placeholder("~/data/app.sqlite")),
+            host: cx.new(|cx| InputState::new(cx).placeholder("127.0.0.1")),
+            port: cx.new(|cx| InputState::new(cx).placeholder("5432 / 3306")),
+            database: cx.new(|cx| InputState::new(cx).placeholder("数据库名")),
+            user: cx.new(|cx| InputState::new(cx).placeholder("用户名")),
+            password: cx.new(|cx| InputState::new(cx).placeholder("密码（可选）")),
+            testing: false,
+            test_status: None,
+        };
         let docker_run_form = crate::modules::docker::DockerRunForm {
             name: cx.new(|cx| InputState::new(cx).placeholder("容器名称（可选）")),
             ports: cx.new(|cx| InputState::new(cx).placeholder("端口映射，例如 8080:80")),
@@ -132,6 +158,13 @@ impl MintoolApp {
                     Some(format!("SSH 配置读取失败：{error:#}")),
                 ),
             };
+        let (database_registry, database_error) = match DatabaseRegistry::load(&storage) {
+            Ok(registry) => (registry, None),
+            Err(error) => (
+                DatabaseRegistry::default(),
+                Some(format!("数据库配置读取失败：{error:#}")),
+            ),
+        };
         let ssh_form = SshForm {
             name: cx.new(|cx| InputState::new(cx).placeholder("连接名称（可选）")),
             host: cx.new(|cx| InputState::new(cx).placeholder("主机名或 ~/.ssh/config 别名")),
@@ -210,6 +243,13 @@ impl MintoolApp {
                 cx.notify();
             }
         });
+        let database_subscription = cx.subscribe(&database_search, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        let database_engine_subscription =
+            cx.subscribe(&database_form.engine, |_, _, _, cx| cx.notify());
         let dialog_subscription = cx.subscribe(&dialog_input, |this, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -260,6 +300,12 @@ impl MintoolApp {
                     remote_previews: HashMap::new(),
                 },
                 docker: DockerModule::new(docker_search, settings.docker_sidebar, docker_run_form),
+                database: DatabaseModule::with_form(
+                    database_registry,
+                    database_search,
+                    database_form,
+                    settings.database_sidebar,
+                ),
                 active: settings.active_module,
             },
             workspaces: HashMap::new(),
@@ -297,7 +343,7 @@ impl MintoolApp {
             changes: false,
             focus_pending: true,
             quit_confirmed: false,
-            error: ssh_error,
+            error: ssh_error.or(database_error),
             error_shown: None,
             toast_hovered: false,
             dirty: Some(Instant::now()),
@@ -311,6 +357,8 @@ impl MintoolApp {
                 ssh_subscription,
                 ssh_remote_filter_subscription,
                 docker_subscription,
+                database_subscription,
+                database_engine_subscription,
                 dialog_subscription,
             ]
             .into_iter()
@@ -327,6 +375,9 @@ impl MintoolApp {
         }
         self.dirty = Some(Instant::now());
         cx.notify();
+    }
+    pub(crate) fn keep_subscription(&mut self, subscription: Subscription) {
+        self._subscriptions.push(subscription);
     }
     pub(crate) fn current(&self) -> Option<Project> {
         if self.modules.active != ModuleId::Projects {
@@ -508,13 +559,63 @@ impl MintoolApp {
             }
         };
         let generation = self.dialog_generation;
-        let picker = cx.new(|cx| DirectoryPicker::new(browser, window, cx));
+        let picker =
+            cx.new(|cx| DirectoryPicker::new(browser, DirectoryPickerMode::Directory, window, cx));
         self.directory_subscription = Some(cx.subscribe(&picker, move |this, _, event, cx| {
             if let DirectoryPickerEvent::Selected(path) = event {
                 if generation == this.dialog_generation && this.dialog.is_some() {
                     this.pending_directory = Some(DirectoryResult {
                         path: path.clone(),
                         generation,
+                        target: DirectoryTarget::DialogInput,
+                    });
+                }
+            }
+            this.directory_picker = None;
+            this.directory_subscription = None;
+            cx.notify();
+        }));
+        self.directory_picker = Some(picker);
+        cx.notify();
+    }
+
+    pub(crate) fn choose_database_form_file(
+        &mut self,
+        create: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let home = crate::services::desktop::home_dir();
+        let entered = PathBuf::from(self.modules.database.form.path.read(cx).content().trim());
+        let initial = if entered.is_dir() {
+            entered
+        } else if let Some(parent) = entered.parent().filter(|parent| parent.is_dir()) {
+            parent.to_path_buf()
+        } else {
+            home
+        };
+        let browser = match DirectoryBrowser::open(&initial) {
+            Ok(browser) => browser,
+            Err(error) => {
+                self.dialog_error = Some(format!("{error:#}"));
+                cx.notify();
+                return;
+            }
+        };
+        let generation = self.dialog_generation;
+        let mode = if create {
+            DirectoryPickerMode::NewFile
+        } else {
+            DirectoryPickerMode::OpenFile
+        };
+        let picker = cx.new(|cx| DirectoryPicker::new(browser, mode, window, cx));
+        self.directory_subscription = Some(cx.subscribe(&picker, move |this, _, event, cx| {
+            if let DirectoryPickerEvent::Selected(path) = event {
+                if generation == this.dialog_generation && this.dialog.is_some() {
+                    this.pending_directory = Some(DirectoryResult {
+                        path: path.clone(),
+                        generation,
+                        target: DirectoryTarget::DatabaseFormPath,
                     });
                 }
             }
@@ -658,6 +759,9 @@ impl MintoolApp {
                 };
                 let next = workspace.state.next_id;
                 if workspace.state.layout.split(pane, next, axis) {
+                    if key.module == ModuleId::Database {
+                        workspace.state.add_query(next);
+                    }
                     self.dock_splits.push((key.clone(), pane, next, axis));
                     self.panel_states.retain(|key, _| key == "app-panels");
                     workspace.state.next_id += 1;

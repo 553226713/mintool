@@ -73,6 +73,8 @@ impl Workspace {
             } else {
                 WorkspaceState::default()
             }
+        } else if key.module == ModuleId::Database {
+            WorkspaceState::query()
         } else {
             WorkspaceState::default()
         };

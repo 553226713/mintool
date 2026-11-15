@@ -24,6 +24,7 @@ enum PaletteAction {
     NewTerminal,
     RefreshDocker,
     ImportSsh,
+    AddDatabase,
     SwitchModule(ModuleId),
 }
 
@@ -71,6 +72,11 @@ fn commands() -> Vec<Command> {
             action: PaletteAction::RefreshDocker,
         },
         Command {
+            label: "新建数据库连接…",
+            hint: "数据库",
+            action: PaletteAction::AddDatabase,
+        },
+        Command {
             label: "切换到项目",
             hint: "模块",
             action: PaletteAction::SwitchModule(ModuleId::Projects),
@@ -84,6 +90,11 @@ fn commands() -> Vec<Command> {
             label: "切换到 Docker",
             hint: "模块",
             action: PaletteAction::SwitchModule(ModuleId::Docker),
+        },
+        Command {
+            label: "切换到数据库",
+            hint: "模块",
+            action: PaletteAction::SwitchModule(ModuleId::Database),
         },
     ]
 }
@@ -176,6 +187,16 @@ impl MintoolApp {
             }
             PaletteAction::RefreshDocker => self.refresh_docker(cx),
             PaletteAction::ImportSsh => self.import_ssh_config(cx),
+            PaletteAction::AddDatabase => self.show_dialog(
+                Dialog::Database(
+                    crate::modules::database::dialogs::DatabaseDialog::Connection {
+                        edit: None,
+                        group: None,
+                    },
+                ),
+                window,
+                cx,
+            ),
             PaletteAction::SwitchModule(module) => self.switch_module(module, cx),
         }
     }

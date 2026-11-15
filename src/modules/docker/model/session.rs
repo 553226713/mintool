@@ -1,6 +1,6 @@
 use super::{DockerContainer, DockerView};
 use crate::model::session::{
-    ModuleId, SessionCapabilities, SessionKey, SessionView, TerminalLauncher,
+    ModuleId, SessionCapabilities, SessionKey, SessionSurface, SessionView, TerminalLauncher,
 };
 use crate::modules::docker::cli;
 
@@ -20,6 +20,7 @@ impl SessionView {
                 program: cli::binary(),
                 args,
             },
+            surface: SessionSurface::Terminal,
             capabilities: SessionCapabilities::DOCKER,
             run_command: None,
         }
@@ -64,6 +65,7 @@ impl SessionView {
                 program: cli::binary(),
                 args,
             },
+            surface: SessionSurface::Terminal,
             capabilities: SessionCapabilities::DOCKER,
             run_command: None,
         }

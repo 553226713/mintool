@@ -3,7 +3,8 @@ use crate::app::MintoolApp;
 use crate::ui::{file_icon::file_icon, format::format_size, theme};
 use adabraka_ui::components::{
     button::{Button, ButtonSize, ButtonVariant},
-    input::Input,
+    icon::Icon,
+    input::{Input, InputSize},
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -394,7 +395,11 @@ impl MintoolApp {
                                 input.style().align_items = Some(AlignItems::Stretch);
                                 input
                             })
-                            .w_full(),
+                            .w_full()
+                            .min_w(px(160.))
+                            .size(InputSize::Sm)
+                            .placeholder("筛选远端文件…")
+                            .prefix(Icon::new("search").size(px(13.)).color(theme::muted())),
                     ),
             )
             .child(self.remote_breadcrumbs(&browser.current, cx))

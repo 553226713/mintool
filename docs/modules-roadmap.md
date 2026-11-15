@@ -1,6 +1,6 @@
 # 模块 roadmap 与 Docker 模块设计
 
-当前模块：**项目、SSH、Docker**。Docker 已实现容器、镜像、卷、网络分类管理，以及日志/终端会话、启停/重启/暂停/删除和手动刷新；从镜像运行容器、Compose 等后续能力仍按本文推进。
+当前模块：**项目、SSH、Docker、数据库**。Docker 已实现容器、镜像、卷、网络、Compose、运行容器、日志/终端会话和常用资源操作；数据库基础版已支持 SQLite、PostgreSQL、MySQL、MariaDB，以及连接分组、结构树和查询工作区，详见 [database-module.md](database-module.md)。
 
 ## 一、为什么是 Docker
 
@@ -95,11 +95,11 @@ pub struct DockerModule {
 - 复制 ID/名称。
 - 权限错误和 daemon 未启动的明确提示。
 
-**Phase D3：运行与镜像（下一步）**
+**Phase D3：运行与镜像（已实现）**
 - 从镜像运行容器（名称、端口、环境变量、挂载、命令）。
 - 镜像删除；容器日志跟随/暂停；一键清理已停止容器。
 
-**Phase D4：Compose 与高级项**
+**Phase D4：Compose 与高级项（已实现）**
 - Compose 项目列表、up/down/restart、compose logs。
 - 卷、网络清理能力已实现；Compose 资源与批量清理待补充。
 - 容器指标（可选，cpu/mem 需要 `docker stats` 解析）。
@@ -135,9 +135,9 @@ CI 环境下没有 Docker 时跳过集成测试，只保留 CLI 输出解析单�
 
 ## 八、模块路线建议
 
-1. **Docker（下一步）**：复用终端/会话，收益最高。
-2. **数据库**：MySQL/PostgreSQL/Redis/SQLite 连接、SQL 执行、结果表格；可复用 SSH 的连接列表模型。
-3. **本机服务**：systemd 服务与日志、端口监听列表，复用状态栏/终端。
-4. **快捷命令 / Runbook**：保存常用命令并在项目/SSH 会话中执行，和 Docker 的“一键 exec”互补。
+1. **数据库（基础版完成）**：下一步是查询历史、结果导出、SSH 隧道和更多驱动。
+2. **快捷命令 / Runbook**：保存常用命令并在项目/SSH/Docker 会话中执行，建议做成跨模块能力而不是独立资源模块。
+3. **本机服务**：仅当产品明确转向 Linux 运维用户时再做 systemd 服务与端口监听。
+4. **Redis 数据源**：需要独立的键值浏览交互，不并入 SQL 工作台。
 
-Docker 完成后，活动栏会有三个主模块：项目、SSH、Docker；后续模块沿用同一套 `ModuleId + SessionKey + 模块目录` 机制，不需要再改 Dock/终端/布局。
+当前活动栏有四个主模块：项目、SSH、Docker、数据库。后续模块继续沿用同一套 `ModuleId + SessionKey + 模块目录` 机制；非终端内容通过 `SessionSurface` 扩展，不需要让 workspace 依赖具体业务模块。

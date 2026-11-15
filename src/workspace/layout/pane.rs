@@ -14,6 +14,12 @@ pub struct Pane {
     pub terminal_closed: bool,
 }
 
+impl Pane {
+    pub fn is_terminal(&self) -> bool {
+        self.terminal && !self.showing_file && self.remote.is_none()
+    }
+}
+
 fn default_true() -> bool {
     true
 }

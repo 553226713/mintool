@@ -40,7 +40,7 @@ impl Render for MintoolApp {
                 .workspaces
                 .get_mut(session)
                 .and_then(|workspace| workspace.state.layout.find_mut(*id))
-                .is_some_and(|pane| !pane.showing_file);
+                .is_some_and(|pane| pane.is_terminal());
             terminal.update(cx, |view, cx| {
                 let allowed = !overlays && selected && active && showing_terminal;
                 if view.allowed != allowed {
@@ -51,7 +51,13 @@ impl Render for MintoolApp {
         }
         if let Some(result) = self.pending_directory.take() {
             if result.generation == self.dialog_generation && self.dialog.is_some() {
-                self.dialog_input.update(cx, |state, cx| {
+                let input = match result.target {
+                    crate::app::DirectoryTarget::DialogInput => self.dialog_input.clone(),
+                    crate::app::DirectoryTarget::DatabaseFormPath => {
+                        self.modules.database.form.path.clone()
+                    }
+                };
+                input.update(cx, |state, cx| {
                     state.select_all(&adabraka_ui::components::input_state::SelectAll, window, cx);
                     state.set_value(result.path.display().to_string(), window, cx);
                 });
@@ -107,6 +113,7 @@ impl Render for MintoolApp {
             ModuleId::Projects => self.render_navigation(window, cx),
             ModuleId::Ssh => self.render_ssh_sidebar(window, cx),
             ModuleId::Docker => self.render_docker_sidebar(window, cx),
+            ModuleId::Database => self.render_database_sidebar(window, cx),
         };
         let workspace = if docker_resources {
             self.render_docker_resources(cx)
@@ -139,6 +146,7 @@ impl Render for MintoolApp {
             ModuleId::Projects => true,
             ModuleId::Ssh => self.modules.ssh.opened.is_some(),
             ModuleId::Docker => docker_auxiliary,
+            ModuleId::Database => false,
         };
         let explorer = if auxiliary {
             Some(match self.modules.active {
@@ -148,6 +156,7 @@ impl Render for MintoolApp {
                     Some(session) => self.render_docker_session_panel(session, window, cx),
                     None => div().into_any_element(),
                 },
+                ModuleId::Database => div().into_any_element(),
             })
         } else {
             None

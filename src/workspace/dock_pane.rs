@@ -56,39 +56,54 @@ impl Panel for DockPane {
         let key = self.session.key.clone();
         let middle_key = key.clone();
         let middle_app = app.clone();
-        let (closed, file_name, is_file, showing_file) =
-            app.upgrade().map_or((false, None, false, false), |app| {
-                let app = app.read(cx);
-                let Some(workspace) = app.workspaces.get(&key) else {
-                    return (false, None, false, false);
-                };
-                let remote_path = workspace.state.remote_files.get(&id);
-                let is_file = workspace.state.files.contains_key(&id) || remote_path.is_some();
-                let file_name = workspace
-                    .state
-                    .files
-                    .get(&id)
-                    .and_then(|path| path.file_name())
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .or_else(|| {
-                        remote_path.map(|path| {
-                            path.rsplit('/').next().unwrap_or(path.as_str()).to_string()
-                        })
-                    });
-                let pane = workspace.state.layout.find(id);
-                let showing_file = pane.is_some_and(|pane| pane.showing_file);
-                let closed = is_file || pane.is_none_or(|pane| pane.terminal_closed);
-                (closed, file_name, is_file, showing_file)
-            });
-        let name = if let Some(file_name) = file_name {
-            file_name
+        let (closed, file_name, query_name, is_document, showing_document) =
+            app.upgrade()
+                .map_or((false, None, None, false, false), |app| {
+                    let app = app.read(cx);
+                    let Some(workspace) = app.workspaces.get(&key) else {
+                        return (false, None, None, false, false);
+                    };
+                    let remote_path = workspace.state.remote_files.get(&id);
+                    let is_file = workspace.state.files.contains_key(&id) || remote_path.is_some();
+                    let is_query = workspace.state.queries.contains_key(&id);
+                    let file_name = workspace
+                        .state
+                        .files
+                        .get(&id)
+                        .and_then(|path| path.file_name())
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .or_else(|| {
+                            remote_path.map(|path| {
+                                path.rsplit('/').next().unwrap_or(path.as_str()).to_string()
+                            })
+                        });
+                    let query_name = workspace
+                        .state
+                        .queries
+                        .get(&id)
+                        .map(|query| query.title.clone());
+                    let pane = workspace.state.layout.find(id);
+                    let showing_file = pane.is_some_and(|pane| pane.showing_file);
+                    let showing_document = showing_file || is_query;
+                    let closed =
+                        is_file || (!is_query && pane.is_none_or(|pane| pane.terminal_closed));
+                    (
+                        closed,
+                        file_name,
+                        query_name,
+                        is_file || is_query,
+                        showing_document,
+                    )
+                });
+        let name = if let Some(name) = file_name.or(query_name) {
+            name
         } else if closed {
             "空面板".to_string()
         } else {
             format!("终端 {id}")
         };
         let close_app = app.clone();
-        let close_button = (!showing_file || is_file).then(|| {
+        let close_button = (!showing_document || is_document).then(|| {
             Button::new(SharedString::from(format!(
                 "tab-close-{}-{id}",
                 self.session.key.module.slug()
@@ -97,8 +112,8 @@ impl Panel for DockPane {
             .ghost()
             .xsmall()
             .tab_stop(false)
-            .tooltip(if is_file {
-                "关闭文件预览"
+            .tooltip(if is_document {
+                "关闭文档"
             } else {
                 "关闭终端并停止关联进程"
             })
@@ -155,6 +170,7 @@ impl Panel for DockPane {
         if app.read(cx).workspaces.get(&key).is_some_and(|workspace| {
             workspace.state.files.contains_key(&self.id)
                 || workspace.state.remote_files.contains_key(&self.id)
+                || workspace.state.queries.contains_key(&self.id)
         }) {
             return None;
         }

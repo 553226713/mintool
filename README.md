@@ -40,7 +40,7 @@ sudo apt install clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev \
 
 `v0.2.1` 新增 Dock 标签组与自由分屏、终端滚动条、终端进程生命周期清理、系统终端嵌入和终端图片粘贴；修复终端输出期间缩放导致的解析崩溃，并优化项目切换与文件预览的重复 I/O 和大对象复制。
 
-当前开发版新增最左侧模块栏（项目 / SSH / Docker）、独立的 SSH 连接管理与 SSH 会话（系统 `ssh`、密钥/密码、`~/.ssh/config` 导入、同一连接多会话）、SSH 双栏文件传输和本地 Docker 容器管理；运行时会话按模块隔离，配置迁移到 `~/.mintool/modules/`。
+当前开发版新增最左侧模块栏（项目 / SSH / Docker / 数据库）、独立的 SSH 连接管理与 SSH 会话（系统 `ssh`、密钥/密码、`~/.ssh/config` 导入、同一连接多会话）、SSH 双栏文件传输、本地 Docker 容器管理和多数据库查询工作台；运行时会话按模块隔离，配置迁移到 `~/.mintool/modules/`。
 
 ## Debian / Ubuntu 安装包
 
@@ -72,6 +72,8 @@ sudo apt install ./dist/mintool_0.2.1-1_amd64.deb
 - 打开 SSH 会话后，右侧变为类似 Xftp 的双栏文件传输面板：左侧本地文件系统、右侧远端 SFTP 目录；两侧都有可点击的路径面包屑、后退、上一级、主目录和刷新。双击目录进入，双击远程文件在 Dock 中打开只读预览；选中文件后可用“上传 →”“← 下载”在两侧当前目录之间传输，重名会自动加序号。远程右键还支持复制路径、下载到系统下载目录和在终端中进入该目录。
 - Docker 模块列出本地容器、镜像、卷和网络：点击“日志/终端”在右侧可调宽面板打开会话，主区域始终保留资源列表；面板支持日志行数（100/500/2000）与时间戳切换、查看只读容器详情（inspect 摘要）、关闭时停止对应进程。容器支持启动/停止/重启/暂停/恢复/删除和资源统计快照，镜像支持“运行容器…”（名称、端口、环境变量、挂载、命令）、拉取和标记，卷/网络支持新建，各资源分类支持清理未使用项。Compose 资源按“项目 → 服务”分组展示，支持项目启动/停止/重启和在右侧面板查看 compose logs。列表支持搜索、每 5 秒自动刷新（操作后立即刷新）、复制 ID/名称。
 - Docker 使用系统 `docker` CLI，自动遵循 `DOCKER_HOST` 和 rootless 配置，也可用 `MINTOOL_DOCKER_BIN` 指定 docker/podman 可执行文件；daemon 未启动或 socket 权限不足时会在侧栏给出明确错误。
+- 数据库模块支持 SQLite、PostgreSQL、MySQL 和 MariaDB。新建连接时可选择数据库类型与分组；SQLite 可通过文件选择器打开已有数据库，或浏览目录并填写文件名创建新数据库，网络数据库可填写主机、端口、数据库、用户名和密码，并在保存前测试连接。连接支持分组、折叠、拖拽归组、右键移动和排序。
+- 数据库连接可展开为“数据库 → Schema → 表/视图 → 字段”，字段显示类型、主键和空值约束；双击表会在新查询面板生成 `SELECT * ... LIMIT 100`。打开连接后在独立 Dock 工作区中编辑 SQL，按 Ctrl+Enter 执行光标所在语句。查询在后台线程运行，结果显示列名、NULL、耗时和影响行数，单次最多保留 1000 行；查询文本随工作区保存。网络数据库密码会写入仅当前用户可读的 `0600` 配置文件。
 - 添加项目时可选择所属分组；分组右键可直接添加到该分组。目录选择器只回填路径，确认后才添加；无效路径、空名称、重复分组名会在弹窗内提示。
 - 目录选择器支持上一级、主目录、显示隐藏目录，以及输入路径后按 Enter 进入。单击选中、双击进入，可选择当前目录或选中的子目录，包含 FUSE 等挂载目录。
 - 项目右键可打开项目、新建终端、在文件管理器中打开、复制路径、重命名、重新定位目录、移动归组、上下排序及移除。分组右键可添加项目、折叠展开、重命名、上下排序及删除；左侧空白处右键可添加项目/分组、展开或折叠全部分组。
@@ -110,8 +112,11 @@ sudo apt install ./dist/mintool_0.2.1-1_amd64.deb
 │   ├── ssh/
 │   │   ├── registry.json          # 权限 0600，可能包含明文密码
 │   │   └── sessions/<连接 UUID>.json
-│   └── docker/
-│       └── sessions/<容器会话>.json
+│   ├── docker/
+│   │   └── sessions/<容器会话>.json
+│   └── database/
+│       ├── registry.json
+│       └── sessions/<连接 UUID>.json
 └── logs/
 ```
 
@@ -130,8 +135,9 @@ right_width = 270.0
 ssh_right_width = 520.0
 docker_right_width = 620.0
 docker_refresh_seconds = 5
+database_sidebar = true
 terminal_scrollback = 2000
-active_module = "Projects" # Projects / Ssh / Docker
+active_module = "Projects" # Projects / Ssh / Docker / Database
 projects_sidebar = true
 ssh_sidebar = true
 docker_sidebar = true
@@ -152,9 +158,9 @@ cargo test --locked
 cargo build --release --locked
 ```
 
-`src/modules/` 按业务模块划分：`projects/` 保存项目注册表、侧栏和菜单，`ssh/` 保存连接注册表、导入、侧栏、对话框、ssh 启动参数和 SFTP 传输，`docker/` 保存 Docker CLI、容器/镜像列表与会话，公共的分组/会话抽象在 `common/`；`src/workspace/` 是与模块无关的会话运行时（Dock、分屏、终端/文件面板生命周期）；`src/shell/` 是最左侧模块栏、工具栏和状态栏；`src/services/` 保存配置存储、PTY、Git 等基础服务；`src/ui/` 放置通用弹窗、主题、文件树与终端绘制；`src/app.rs` 负责组合。
+`src/modules/` 按业务模块划分：`projects/` 保存项目注册表、侧栏和菜单，`ssh/` 保存连接注册表、导入、侧栏、对话框、ssh 启动参数和 SFTP 传输，`docker/` 保存 Docker CLI、容器/镜像列表与会话，`database/` 保存数据库连接、SQLite 驱动、查询视图和结果表格，公共的分组/会话抽象在 `common/`；`src/workspace/` 是与模块无关的会话运行时（Dock、分屏、终端/文件/查询面板生命周期）；`src/shell/` 是最左侧模块栏、工具栏和状态栏；`src/services/` 保存配置存储、PTY、Git 等基础服务；`src/ui/` 放置通用弹窗、主题、文件树与终端绘制；`src/app.rs` 负责组合。
 
-后续大模块（Docker、数据库、本机服务等）的架构与实施顺序见 [docs/modules-roadmap.md](docs/modules-roadmap.md)。
+数据库模块的阶段规划见 [docs/database-module.md](docs/database-module.md)，其他大模块的架构与实施顺序见 [docs/modules-roadmap.md](docs/modules-roadmap.md)。
 
 集成测试覆盖拖动对应的数据操作、分屏合并与序列化、配置锁与备份恢复、模块存储迁移、SSH 注册表/命令构建/配置导入、真实 Git 状态，以及真实 PTY 的工作目录隔离、后台运行、中断和尺寸同步。当前只在 Linux 上验证；尚未验证 Windows/macOS。
 

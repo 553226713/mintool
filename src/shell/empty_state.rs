@@ -1,4 +1,5 @@
 use crate::app::MintoolApp;
+use crate::modules::database::dialogs::DatabaseDialog;
 use crate::modules::projects::dialogs::ProjectDialog;
 use crate::modules::ssh::dialogs::SshDialog;
 use crate::modules::ModuleId;
@@ -131,6 +132,54 @@ impl MintoolApp {
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.show_dialog(
                                         Dialog::Ssh(SshDialog::Connection {
+                                            edit: None,
+                                            group: None,
+                                        }),
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        )
+                    })
+                    .into_any_element()
+            }
+            ModuleId::Database => {
+                let has_connections = !self.modules.database.registry.connections.is_empty();
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_4()
+                    .child(
+                        Icon::new("file-database")
+                            .size(px(46.))
+                            .text_color(theme::accent()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(24.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(if has_connections {
+                                "选择一个数据库连接"
+                            } else {
+                                "直接查询 SQLite"
+                            }),
+                    )
+                    .child(div().text_color(theme::muted()).child(if has_connections {
+                        "查询在后台执行，结果和连接不会阻塞工作区"
+                    } else {
+                        "添加已有数据库文件 · SQL 高亮 · 可取消查询"
+                    }))
+                    .when(!has_connections, |state| {
+                        state.child(
+                            Button::new("first-database", "添加或新建 SQLite")
+                                .variant(ButtonVariant::Default)
+                                .icon("plus")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_dialog(
+                                        Dialog::Database(DatabaseDialog::Connection {
                                             edit: None,
                                             group: None,
                                         }),

@@ -82,6 +82,7 @@ impl MintoolApp {
                     .files
                     .keys()
                     .chain(self.workspaces[&key].state.remote_files.keys())
+                    .chain(self.workspaces[&key].state.queries.keys())
                 {
                     dock.add_tab_after(anchor, *file_id);
                 }
@@ -137,6 +138,7 @@ impl MintoolApp {
                 dock.count.store(dock.panels.len(), Ordering::Relaxed);
             } else if let Some(workspace) = self.workspaces.get_mut(&key) {
                 workspace.state.files.remove(&next);
+                workspace.state.queries.remove(&next);
             }
         }
         let requests = std::mem::take(&mut self.dock_splits);
@@ -237,6 +239,14 @@ impl MintoolApp {
                     self.previews.remove(&(key.clone(), id));
                     self.image_previews.remove(&(key.clone(), id));
                     self.modules.ssh.remote_previews.remove(&(key.clone(), id));
+                    continue;
+                }
+                let is_query = self
+                    .workspaces
+                    .get_mut(&key)
+                    .is_some_and(|workspace| workspace.state.queries.remove(&id).is_some());
+                if is_query {
+                    self.modules.database.drop_query(&key, id);
                     continue;
                 }
                 if let Some(session) = self
