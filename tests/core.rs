@@ -173,6 +173,34 @@ fn wait_for(session: &TerminalSession, text: &str) {
     }
 }
 #[test]
+fn real_pty_tab_completes_a_filename_in_the_shell() {
+    use mintool::services::terminal::TerminalSpec;
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("mintool-completion-target.txt"),
+        "COMPLETION_WORKED\n",
+    )
+    .unwrap();
+    let mut session = TerminalSession::spawn_spec(&TerminalSpec {
+        program: "/bin/bash".into(),
+        args: vec!["--noprofile".into(), "--norc".into(), "-i".into()],
+        cwd: directory.path().into(),
+        envs: vec![
+            ("PS1".into(), "READY> ".into()),
+            ("INPUTRC".into(), "/dev/null".into()),
+        ],
+    })
+    .unwrap();
+    wait_for(&session, "READY>");
+    session.send(b"cat mintool-completion-").unwrap();
+    session
+        .send(&key("tab", KeyModifiers::default(), false).unwrap())
+        .unwrap();
+    session.send(b"\r").unwrap();
+    wait_for(&session, "COMPLETION_WORKED");
+}
+
+#[test]
 fn real_pty_isolates_working_directories_keeps_processes_and_resizes() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();

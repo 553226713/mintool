@@ -56,8 +56,19 @@ impl MintoolApp {
         let key = SessionKey::ssh(id.clone());
         self.select_session(key.clone(), cx);
         self.modules.ssh.opened = Some(id);
-        self.ensure_session(&key);
-        self.ensure_remote_browser();
+        if !self.ensure_session(&key) {
+            return;
+        }
+        let pane = self.workspaces[&key].state.focused;
+        if self.workspaces[&key]
+            .state
+            .layout
+            .find(pane)
+            .is_some_and(|pane| pane.terminal_closed)
+        {
+            self.restart_terminal(&key, pane, cx);
+        }
+        self.activate_ssh_panel((key.clone(), pane), cx);
         self.start_remote_load(String::new(), cx);
         self.focus_pending = true;
         self.changed(cx);
@@ -124,7 +135,7 @@ impl MintoolApp {
     }
     pub(crate) fn remove_session(&mut self, key: &SessionKey, cx: &mut Context<Self>) {
         self.stop_session_terminals(key, cx);
-        self.modules.database.drop_session(key);
+        self.modules.drop_session_tools(key);
         self.terminals.retain(|(session, _), _| session != key);
         self.system_terminals
             .retain(|(session, _), _| session != key);

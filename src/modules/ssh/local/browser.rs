@@ -6,7 +6,9 @@ pub struct LocalBrowser {
     pub current: PathBuf,
     pub entries: Vec<LocalEntry>,
     pub back: Vec<PathBuf>,
+    pub forward: Vec<PathBuf>,
     pub selected: Option<PathBuf>,
+    pub selected_paths: std::collections::BTreeSet<PathBuf>,
     pub error: Option<String>,
 }
 
@@ -16,7 +18,9 @@ impl LocalBrowser {
             current: start.clone(),
             entries: Vec::new(),
             back: Vec::new(),
+            forward: Vec::new(),
             selected: None,
+            selected_paths: Default::default(),
             error: None,
         };
         browser.current = start;
@@ -44,20 +48,33 @@ impl LocalBrowser {
         }
         if self.current != path {
             self.back.push(self.current.clone());
+            self.forward.clear();
         }
         self.current = path;
         self.selected = None;
+        self.selected_paths.clear();
         self.reload();
     }
 
     pub fn back(&mut self) {
         if let Some(path) = self.back.pop() {
+            self.forward.push(self.current.clone());
             self.current = path;
             self.selected = None;
+            self.selected_paths.clear();
             self.reload();
         }
     }
 
+    pub fn forward(&mut self) {
+        if let Some(path) = self.forward.pop() {
+            self.back.push(self.current.clone());
+            self.current = path;
+            self.selected = None;
+            self.selected_paths.clear();
+            self.reload();
+        }
+    }
     pub fn up(&mut self) {
         if let Some(parent) = self.current.parent() {
             self.navigate(parent.to_path_buf());
@@ -100,6 +117,26 @@ impl LocalBrowser {
                         name,
                         directory,
                         size,
+                        modified: metadata
+                            .as_ref()
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map_or(0, |d| d.as_secs()),
+                        permissions: metadata
+                            .as_ref()
+                            .map(|m| {
+                                use std::os::unix::fs::PermissionsExt;
+                                format!("{:o}", m.permissions().mode() & 0o7777)
+                            })
+                            .unwrap_or_default(),
+                        owner: metadata
+                            .as_ref()
+                            .map(|m| {
+                                use std::os::unix::fs::MetadataExt;
+                                m.uid().to_string()
+                            })
+                            .unwrap_or_default(),
                     });
                 }
             }

@@ -1325,6 +1325,14 @@ impl Element for TextElement {
                         ));
                     }
                 }
+                for (range, color) in &state.line_backgrounds {
+                    if range.contains(&row) {
+                        window.paint_quad(fill(
+                            Bounds::new(p, size(bounds.size.width, height)),
+                            *color,
+                        ));
+                    }
+                }
                 offset_y += height;
             }
         }

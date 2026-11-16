@@ -95,7 +95,7 @@ impl MintoolApp {
         connection.user = user;
         connection.password = (!password.is_empty()).then_some(password);
         connection.identity = (!identity.is_empty()).then(|| expand_path(&identity));
-        connection.extra_args = extra.split_whitespace().map(str::to_owned).collect();
+        connection.extra_args = super::transport::parse_arguments(&extra)?;
         connection.forwards = forwards.split_whitespace().map(str::to_owned).collect();
         connection.color = self.modules.ssh.form.color.clone();
         Ok(connection)

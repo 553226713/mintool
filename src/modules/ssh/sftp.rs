@@ -2,11 +2,11 @@ use super::model::SshConnection;
 use super::path::{basename, parent_of};
 use anyhow::{bail, Context, Result};
 use std::{
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -24,6 +24,10 @@ pub struct RemoteEntry {
     pub name: String,
     pub directory: bool,
     pub size: u64,
+    pub permissions: String,
+    pub owner: String,
+    pub group: String,
+    pub modified: String,
 }
 
 fn quote(path: &str) -> String {
@@ -34,6 +38,8 @@ fn quote(path: &str) -> String {
 pub struct TransferProgress {
     total: AtomicU64,
     transferred: AtomicU64,
+    initial: AtomicU64,
+    process_group: AtomicU32,
     track: AtomicBool,
 }
 
@@ -48,6 +54,8 @@ impl TransferProgress {
         Self {
             total: AtomicU64::new(total),
             transferred: AtomicU64::new(0),
+            initial: AtomicU64::new(0),
+            process_group: AtomicU32::new(0),
             track: AtomicBool::new(true),
         }
     }
@@ -69,6 +77,28 @@ impl TransferProgress {
         self.set_total(total);
         self.set_transferred(total);
     }
+    pub fn transferred(&self) -> u64 {
+        self.transferred.load(Ordering::Relaxed)
+    }
+    pub fn total(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
+    }
+    pub fn set_initial(&self, bytes: u64) {
+        self.initial.store(bytes, Ordering::Relaxed);
+        self.set_transferred(bytes);
+    }
+    pub fn transferred_since_start(&self) -> u64 {
+        self.transferred()
+            .saturating_sub(self.initial.load(Ordering::Relaxed))
+    }
+    pub fn terminate_process(&self) {
+        let pid = self.process_group.swap(0, Ordering::SeqCst);
+        if pid > 0 {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
     pub fn percent(&self) -> Option<u8> {
         let total = self.total.load(Ordering::Relaxed);
         if total == 0 {
@@ -87,56 +117,21 @@ fn spawn_progress(
     std::thread::spawn(move || {
         while !done.load(Ordering::Relaxed) {
             progress.set_transferred(poll());
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(Duration::from_secs(1));
         }
     });
 }
 
 fn run(connection: &SshConnection, commands: &[String]) -> Result<String> {
-    run_with_timeout(connection, commands, OP_TIMEOUT_SECONDS)
+    run_with_timeout(connection, commands, OP_TIMEOUT_SECONDS, true)
 }
 
-fn sftp_args(connection: &SshConnection) -> Vec<String> {
-    let mut args = vec!["-q".to_string()];
-    if connection.port != 22 {
-        args.push("-P".to_string());
-        args.push(connection.port.to_string());
-    }
-    if let Some(identity) = &connection.identity {
-        args.push("-i".to_string());
-        args.push(identity.display().to_string());
-    }
-    for option in [
-        "-o",
-        "ConnectTimeout=8",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "NumberOfPasswordPrompts=1",
-        "-o",
-        "LogLevel=ERROR",
-    ] {
-        args.push(option.to_string());
-    }
-    if connection.password.is_none() {
-        args.push("-o".to_string());
-        args.push("BatchMode=yes".to_string());
-    }
-    args.extend(super::session::control_options());
-    args.push(connection.target());
-    args
+fn sftp_args(connection: &SshConnection) -> Result<Vec<String>> {
+    super::transport::sftp_arguments(connection)
 }
 
 fn configure_askpass(command: &mut Command, connection: &SshConnection) {
-    if let Some(password) = connection.password_value() {
-        if let Some(executable) = super::session::askpass_executable() {
-            command
-                .env("SSH_ASKPASS", executable)
-                .env("SSH_ASKPASS_REQUIRE", "force")
-                .env("MINTOOL_ASKPASS", "1")
-                .env("MINTOOL_ASKPASS_PASSWORD", password);
-        }
-    }
+    command.envs(super::transport::authentication_environment(connection));
 }
 
 fn finish(output: Output) -> Result<String> {
@@ -155,15 +150,19 @@ fn finish(output: Output) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn spawn_sftp(connection: &SshConnection, program: &str) -> Command {
+fn spawn_sftp(connection: &SshConnection, program: &str) -> Result<Command> {
     let mut command = Command::new(program);
-    command.args(sftp_args(connection));
+    command.args(["-b", "-"]);
+    if connection.password_value().is_some() {
+        command.arg("-oBatchMode=no");
+    }
+    command.args(sftp_args(connection)?);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure_askpass(&mut command, connection);
-    command
+    Ok(command)
 }
 
 fn write_commands(child: &mut std::process::Child, commands: &[String]) -> Result<()> {
@@ -179,6 +178,7 @@ fn run_with_timeout(
     connection: &SshConnection,
     commands: &[String],
     timeout_seconds: &str,
+    batch: bool,
 ) -> Result<String> {
     let timeout = if Path::new("/usr/bin/timeout").exists() {
         "/usr/bin/timeout"
@@ -187,7 +187,13 @@ fn run_with_timeout(
     };
     let mut command = Command::new(timeout);
     command.arg(timeout_seconds).arg("sftp");
-    command.args(sftp_args(connection));
+    if batch {
+        command.args(["-b", "-"]);
+        if connection.password_value().is_some() {
+            command.arg("-oBatchMode=no");
+        }
+    }
+    command.args(sftp_args(connection)?);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -202,21 +208,60 @@ fn run_transfer(
     connection: &SshConnection,
     commands: &[String],
     cancel: &AtomicBool,
+    progress: &TransferProgress,
 ) -> Result<String> {
-    let mut child = spawn_sftp(connection, "sftp")
-        .spawn()
-        .context("无法启动 sftp")?;
-    write_commands(&mut child, commands)?;
+    use std::os::unix::process::CommandExt;
+    if cancel.load(Ordering::Relaxed) {
+        bail!("传输已取消");
+    }
+    let mut command = spawn_sftp(connection, "sftp")?;
+    command.process_group(0);
+    let child = command.spawn().context("无法启动 sftp")?;
+    progress.process_group.store(child.id(), Ordering::SeqCst);
+    let result = wait_transfer(child, commands, cancel);
+    progress.process_group.store(0, Ordering::SeqCst);
+    result
+}
+
+fn kill_transfer(child: &mut std::process::Child) {
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.wait();
+}
+fn wait_transfer(
+    mut child: std::process::Child,
+    commands: &[String],
+    cancel: &AtomicBool,
+) -> Result<String> {
+    let mut stdout = child.stdout.take().context("无法读取 sftp 输出")?;
+    let mut stderr = child.stderr.take().context("无法读取 sftp 错误")?;
+    let out = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let err = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    if let Err(error) = write_commands(&mut child, commands) {
+        kill_transfer(&mut child);
+        let _ = out.join();
+        let _ = err.join();
+        return Err(error);
+    }
     let start = Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_transfer(&mut child);
+            let _ = out.join();
+            let _ = err.join();
             bail!("传输已取消");
         }
         if start.elapsed() >= TRANSFER_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_transfer(&mut child);
+            let _ = out.join();
+            let _ = err.join();
             bail!("传输超时");
         }
         if child.try_wait()?.is_some() {
@@ -224,7 +269,18 @@ fn run_transfer(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    finish(child.wait_with_output()?)
+    let status = child.wait()?;
+    let stdout = out
+        .join()
+        .map_err(|_| anyhow::anyhow!("读取 sftp 输出失败"))??;
+    let stderr = err
+        .join()
+        .map_err(|_| anyhow::anyhow!("读取 sftp 错误失败"))??;
+    finish(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 pub fn list_directory(connection: &SshConnection, parent: &str) -> Result<Vec<RemoteEntry>> {
@@ -241,6 +297,25 @@ pub fn list_directory(connection: &SshConnection, parent: &str) -> Result<Vec<Re
         }
     }
     Ok(entries)
+}
+
+pub fn read_directory(
+    connection: &SshConnection,
+    parent: &str,
+) -> Result<super::directory::RemoteDirectory> {
+    let path = if parent.is_empty() { "." } else { parent };
+    let output = run_with_timeout(
+        connection,
+        &[
+            "pwd".into(),
+            format!("cd {}", quote(path)),
+            "pwd".into(),
+            "ls -la .".into(),
+        ],
+        OP_TIMEOUT_SECONDS,
+        true,
+    )?;
+    super::directory::RemoteDirectory::parse(&output)
 }
 
 pub fn stat_file(connection: &SshConnection, remote: &str) -> Result<RemoteEntry> {
@@ -268,6 +343,27 @@ pub fn upload_to_with_progress(
     cancel: Arc<AtomicBool>,
     progress: Arc<TransferProgress>,
 ) -> Result<()> {
+    upload_impl(connection, local, remote, cancel, progress, false)
+}
+
+pub fn resume_upload(
+    connection: &SshConnection,
+    local: &Path,
+    remote: &str,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<TransferProgress>,
+) -> Result<()> {
+    upload_impl(connection, local, remote, cancel, progress, true)
+}
+
+fn upload_impl(
+    connection: &SshConnection,
+    local: &Path,
+    remote: &str,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<TransferProgress>,
+    resume: bool,
+) -> Result<()> {
     let tracked = progress.tracked();
     let total = std::fs::metadata(local)
         .ok()
@@ -275,6 +371,9 @@ pub fn upload_to_with_progress(
         .map(|metadata| metadata.len())
         .unwrap_or(0);
     progress.set_total(total);
+    if resume {
+        progress.set_initial(stat_file(connection, remote)?.size.min(total));
+    }
     let done = Arc::new(AtomicBool::new(false));
     if tracked && total > 0 {
         let poll_connection = connection.clone();
@@ -287,15 +386,17 @@ pub fn upload_to_with_progress(
                 .unwrap_or(0)
         });
     }
-    let recursive = if local.is_dir() { "-r " } else { "" };
+    let recursive = if local.is_dir() { "-R " } else { "" };
     let result = run_transfer(
         connection,
         &[format!(
-            "put {recursive}{} {}",
+            "{} {recursive}{} {}",
+            if resume { "reput" } else { "put" },
             quote(&local.display().to_string()),
             quote(remote)
         )],
         &cancel,
+        &progress,
     );
     done.store(true, Ordering::Relaxed);
     let output = result?;
@@ -394,6 +495,27 @@ pub fn download_to_with_progress(
     cancel: Arc<AtomicBool>,
     progress: Arc<TransferProgress>,
 ) -> Result<()> {
+    download_impl(connection, remote, local, cancel, progress, false)
+}
+
+pub fn resume_download(
+    connection: &SshConnection,
+    remote: &str,
+    local: &Path,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<TransferProgress>,
+) -> Result<()> {
+    download_impl(connection, remote, local, cancel, progress, true)
+}
+
+fn download_impl(
+    connection: &SshConnection,
+    remote: &str,
+    local: &Path,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<TransferProgress>,
+    resume: bool,
+) -> Result<()> {
     let tracked = progress.tracked();
     let total = if tracked {
         stat_file(connection, remote)
@@ -405,6 +527,14 @@ pub fn download_to_with_progress(
         0
     };
     progress.set_total(total);
+    if resume {
+        progress.set_initial(
+            std::fs::metadata(local)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
+                .min(total),
+        );
+    }
     let done = Arc::new(AtomicBool::new(false));
     if tracked && total > 0 {
         let poll_local = local.to_path_buf();
@@ -419,11 +549,13 @@ pub fn download_to_with_progress(
     let result = run_transfer(
         connection,
         &[format!(
-            "get -r {} {}",
+            "{} -R {} {}",
+            if resume { "reget" } else { "get" },
             quote(remote),
             quote(&local.display().to_string())
         )],
         &cancel,
+        &progress,
     );
     done.store(true, Ordering::Relaxed);
     let output = result?;
@@ -433,7 +565,6 @@ pub fn download_to_with_progress(
         || lower.contains("not found")
         || lower.contains("no such file")
     {
-        let _ = std::fs::remove_file(local);
         bail!("无法下载远程文件");
     }
     progress.finish(total);
@@ -481,6 +612,10 @@ pub fn parse_listing(output: &str, parent: &str) -> Vec<RemoteEntry> {
             name,
             directory: kind == 'd',
             size,
+            permissions: permissions.into(),
+            owner: fields[2].into(),
+            group: fields[3].into(),
+            modified: fields[5..8].join(" "),
         });
     }
     entries.sort_by(|left, right| {
@@ -546,5 +681,45 @@ sftp> quit\r
         let entries = parse_listing(output, "sub");
         assert_eq!(entries[0].path, "sub/inner.txt");
         assert_eq!(entries[0].name, "inner.txt");
+    }
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::wait_transfer;
+    use std::{
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+        sync::atomic::AtomicBool,
+    };
+    #[test]
+    fn transfer_reads_output_while_child_is_running() {
+        let child = Command::new("python3")
+            .args([
+                "-c",
+                "import sys; sys.stdout.write('x'*262144); sys.stderr.write('y'*262144)",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let result = wait_transfer(child, &[], &AtomicBool::new(false)).unwrap();
+        assert_eq!(result.len(), 262144);
+    }
+    #[test]
+    fn cancelling_transfer_reaps_its_process_group() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 60"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert!(wait_transfer(child, &[], &AtomicBool::new(true)).is_err());
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
     }
 }

@@ -26,6 +26,38 @@ pub struct Modules {
     pub active: ModuleId,
 }
 impl Modules {
+    pub(crate) fn stop_transfers(&self) {
+        self.ssh.cancel_all_transfers();
+    }
+
+    pub(crate) fn close_pane_tools(&mut self, key: &SessionKey, pane: u64) {
+        if key.module == ModuleId::Ssh {
+            self.ssh.cancel_panel_tasks(key, Some(pane));
+        }
+    }
+    pub(crate) fn drop_session_tools(&mut self, key: &SessionKey) {
+        match key.module {
+            ModuleId::Ssh => self.ssh.drop_session(key),
+            ModuleId::Database => self.database.drop_session(key),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn render_pane_tools(
+        app: &mut crate::app::MintoolApp,
+        session: &SessionView,
+        pane: &crate::workspace::layout::Pane,
+        width: f32,
+        content: gpui::AnyElement,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<crate::app::MintoolApp>,
+    ) -> gpui::AnyElement {
+        match session.key.module {
+            ModuleId::Ssh => app.render_ssh_pane(session, pane, width, content, window, cx),
+            _ => content,
+        }
+    }
+
     pub fn expanded(&self, module: ModuleId) -> bool {
         match module {
             ModuleId::Projects => self.projects.expanded,
@@ -192,6 +224,22 @@ impl Modules {
     pub fn save(&self, storage: &Storage) -> anyhow::Result<()> {
         self.projects.registry.save(storage)?;
         self.ssh.registry.save(storage)?;
+        let mut saved = self.ssh.preferences.clone();
+        for ((session, pane), panel) in &self.ssh.panels {
+            let mut preferences = panel.preferences.clone();
+            preferences.remote = panel
+                .remote
+                .as_ref()
+                .map(|remote| remote.current.clone())
+                .unwrap_or_default();
+            preferences.local = panel.local.as_ref().map(|local| local.current.clone());
+            preferences.local_visible = panel.local_visible;
+            saved.insert(format!("{}/{}", session.id, pane), preferences);
+        }
+        storage.write(
+            &storage.module_dir(ModuleId::Ssh).join("browsers.json"),
+            &saved,
+        )?;
         self.database.registry.save(storage)?;
         Ok(())
     }

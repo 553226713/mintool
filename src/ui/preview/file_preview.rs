@@ -1,3 +1,4 @@
+use crate::services::file_changes::{ChangeKind, LineChange};
 use crate::services::files;
 use crate::ui::theme;
 use adabraka_ui::components::button::{Button, ButtonSize, ButtonVariant};
@@ -37,6 +38,7 @@ pub struct FilePreview {
     rendered: bool,
     editor: Entity<InputState>,
     editor_dirty: bool,
+    changes: Vec<LineChange>,
     save_error: Option<String>,
     saved_text: Option<String>,
     /// Disk content waiting to be applied on the next paint (needs a `Window`).
@@ -71,6 +73,7 @@ impl FilePreview {
             |this, editor: Entity<InputState>, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.editor_dirty = editor.read(cx).value().as_str() != this.text.as_str();
+                    this.update_line_backgrounds(cx);
                     cx.notify();
                 }
             },
@@ -84,6 +87,7 @@ impl FilePreview {
             rendered: false,
             editor,
             editor_dirty: false,
+            changes: Vec::new(),
             save_error: None,
             saved_text: None,
             pending_external: None,
@@ -93,6 +97,23 @@ impl FilePreview {
     }
     pub fn has_unsaved_changes(&self) -> bool {
         self.editor_dirty
+    }
+    pub fn set_changes(&mut self, changes: &[LineChange], cx: &mut Context<Self>) {
+        if self.changes != changes {
+            self.changes = changes.to_vec();
+            self.update_line_backgrounds(cx);
+        }
+    }
+    fn update_line_backgrounds(&mut self, cx: &mut Context<Self>) {
+        // Git ranges describe the disk version. Hide them while editing so
+        // inserted or removed buffer lines cannot show misleading markers.
+        let backgrounds = if self.editor_dirty {
+            Vec::new()
+        } else {
+            change_backgrounds(&self.changes, self.text.split('\n').count())
+        };
+        self.editor
+            .update(cx, |state, cx| state.set_line_backgrounds(backgrounds, cx));
     }
     /// True when the disk changed under a dirty buffer and the user has not
     /// already chosen to keep their version for this content.
@@ -128,6 +149,7 @@ impl FilePreview {
             self.saved_text = Some(text);
         }
         self.editor_dirty = false;
+        self.update_line_backgrounds(cx);
         self.save_error = None;
         cx.notify();
         Ok(())
@@ -148,6 +170,7 @@ impl FilePreview {
         self.text = text.clone();
         self.editor
             .update(cx, |state, cx| state.set_value(text, window, cx));
+        self.update_line_backgrounds(cx);
         self.save_error = None;
         cx.notify();
     }
@@ -159,6 +182,7 @@ impl Render for FilePreview {
             self.editor
                 .update(cx, |state, cx| state.set_value(text, window, cx));
             self.editor_dirty = false;
+            self.update_line_backgrounds(cx);
             self.acknowledged_external = None;
             self.save_error = None;
         }
@@ -307,6 +331,25 @@ impl Render for FilePreview {
     }
 }
 
+fn change_backgrounds(
+    changes: &[LineChange],
+    line_count: usize,
+) -> Vec<(std::ops::Range<usize>, Hsla)> {
+    changes
+        .iter()
+        .map(|change| {
+            let start = change.start.min(line_count.saturating_sub(1));
+            let end = start.saturating_add(change.count.max(1)).min(line_count);
+            let color = match change.kind {
+                ChangeKind::Added => theme::success(),
+                ChangeKind::Modified => theme::warning(),
+                ChangeKind::Deleted => theme::danger(),
+            };
+            (start..end, color.opacity(0.14))
+        })
+        .collect()
+}
+
 pub(crate) fn language_name(path: &Path) -> &'static str {
     match path
         .extension()
@@ -346,5 +389,40 @@ fn kind_label(kind: RichKind) -> &'static str {
     match kind {
         RichKind::Markdown => "Markdown 预览",
         RichKind::Html => "HTML 预览",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{change_backgrounds, theme, ChangeKind, LineChange};
+
+    #[test]
+    fn git_change_backgrounds_cover_hunks_and_clamp_to_document() {
+        let changes = [
+            LineChange {
+                start: 1,
+                count: 2,
+                kind: ChangeKind::Modified,
+            },
+            LineChange {
+                start: 8,
+                count: 1,
+                kind: ChangeKind::Deleted,
+            },
+        ];
+        let backgrounds = change_backgrounds(&changes, 5);
+        assert_eq!(backgrounds[0], (1..3, theme::warning().opacity(0.14)));
+        assert_eq!(backgrounds[1], (4..5, theme::danger().opacity(0.14)));
+
+        let added = [LineChange {
+            start: 0,
+            count: usize::MAX,
+            kind: ChangeKind::Added,
+        }];
+        assert_eq!(
+            change_backgrounds(&added, 5),
+            vec![(0..5, theme::success().opacity(0.14))]
+        );
+        assert!(change_backgrounds(&[], 5).is_empty());
     }
 }

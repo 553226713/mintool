@@ -1,5 +1,6 @@
-use super::{browser::RemoteBrowser, explorer::selected_remote_file, local::LocalBrowser};
+use super::{browser::RemoteBrowser, local::LocalBrowser};
 use crate::app::MintoolApp;
+use crate::ui::common::drag_item::{DragItem, DragKind};
 use crate::ui::{file_icon::file_icon, format::format_size, theme};
 use adabraka_ui::components::{
     button::{Button, ButtonSize, ButtonVariant},
@@ -8,14 +9,11 @@ use adabraka_ui::components::{
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use std::{
-    path::{Path, PathBuf},
-    sync::atomic::Ordering,
-};
+use std::path::{Path, PathBuf};
 
 impl MintoolApp {
     pub(crate) fn render_ssh_explorer(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(remote) = self.modules.ssh.remote.clone() else {
+        let Some(remote) = self.modules.ssh.panel().remote.clone() else {
             return div()
                 .size_full()
                 .p_4()
@@ -29,11 +27,12 @@ impl MintoolApp {
         {
             self.start_remote_load(remote.current.clone(), cx);
         }
-        let remote = self.modules.ssh.remote.clone().unwrap_or(remote);
-        let local_visible = self.modules.ssh.local_visible;
+        let remote = self.modules.ssh.panel().remote.clone().unwrap_or(remote);
+        let local_visible = self.modules.ssh.panel().local_visible;
         let local = local_visible.then(|| {
             self.modules
                 .ssh
+                .panel()
                 .local
                 .clone()
                 .unwrap_or_else(|| LocalBrowser::new(LocalBrowser::home()))
@@ -42,8 +41,6 @@ impl MintoolApp {
             .connection_of(&remote.connection)
             .map(|connection| connection.name)
             .unwrap_or_else(|| "SSH".into());
-        let status = self.modules.ssh.transfer_status.clone();
-        let sync_terminal = self.modules.ssh.sync_terminal;
         div()
             .id("ssh-transfer")
             .size_full()
@@ -67,73 +64,6 @@ impl MintoolApp {
                             .text_size(px(11.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(format!("文件传输 · {connection_name}")),
-                    )
-                    .when_some(status, |header, status| {
-                        let color = if status.cancel.is_some() {
-                            theme::warning()
-                        } else if status.success {
-                            theme::success()
-                        } else {
-                            theme::danger()
-                        };
-                        let cancel = status.cancel.clone();
-                        let percent = status.percent();
-                        header
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .max_w(px(180.))
-                                    .truncate()
-                                    .text_size(px(10.))
-                                    .text_color(color)
-                                    .child(status.message),
-                            )
-                            .when_some(percent, |header, percent| {
-                                header
-                                    .child(
-                                        div()
-                                            .w(px(80.))
-                                            .h(px(4.))
-                                            .rounded_full()
-                                            .bg(theme::border())
-                                            .child(
-                                                div()
-                                                    .h_full()
-                                                    .rounded_full()
-                                                    .bg(theme::accent())
-                                                    .w(px(80. * percent as f32 / 100.)),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_size(px(10.))
-                                            .text_color(theme::accent())
-                                            .child(format!("{percent}%")),
-                                    )
-                            })
-                            .when_some(cancel, |header, cancel| {
-                                header.child(
-                                    Button::new("cancel-transfer", "取消")
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Sm)
-                                        .tooltip("取消当前传输")
-                                        .on_click(move |_, _, _| {
-                                            cancel.store(true, Ordering::Relaxed);
-                                        }),
-                                )
-                            })
-                    })
-                    .child(
-                        Button::new("toggle-ssh-sync", "同步终端")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .selected(sync_terminal)
-                            .tooltip("浏览远端目录时在 SSH 终端中执行 cd")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.modules.ssh.sync_terminal = !this.modules.ssh.sync_terminal;
-                                cx.notify();
-                            })),
                     )
                     .child(
                         Button::new(
@@ -170,6 +100,7 @@ impl MintoolApp {
                     })
                     .child(self.render_remote_column(&remote, cx)),
             )
+            .child(self.render_ssh_queue(cx))
             .into_any_element()
     }
 
@@ -186,8 +117,8 @@ impl MintoolApp {
                     .into_any_element(),
             );
         }
-        for entry in &browser.entries {
-            let selected = browser.selected.as_ref() == Some(&entry.path);
+        for entry in &self.ssh_local_entries() {
+            let selected = browser.selected_paths.contains(&entry.path);
             let path = entry.path.clone();
             let directory = entry.directory;
             let menu_entry = entry.clone();
@@ -200,17 +131,72 @@ impl MintoolApp {
                     entry.size,
                     selected,
                 )
+                .h(px(42.))
+                .when(directory, |row| {
+                    let destination = entry.path.clone();
+                    let owner = self.modules.ssh.active_panel.clone().unwrap();
+                    row.on_drop(cx.listener(move |app, item: &DragItem, _, cx| {
+                        if let DragKind::SshRemoteFiles {
+                            owner: source,
+                            paths,
+                        } = &item.kind
+                        {
+                            app.activate_ssh_panel(source.clone(), cx);
+                            app.enqueue_downloads(paths.clone(), destination.clone(), cx);
+                            app.activate_ssh_panel(owner.clone(), cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                })
+                .relative()
+                .child(self.ssh_row_measure(false, entry.path.to_string_lossy().into_owned(), cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_drag(
+                    DragItem {
+                        kind: DragKind::Files(if selected {
+                            browser.selected_paths.iter().cloned().collect()
+                        } else {
+                            vec![entry.path.clone()]
+                        }),
+                        name: entry.name.clone(),
+                    },
+                    |item, _, _, cx| cx.new(|_| item.clone()),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .pl(px(22.))
+                        .flex_none()
+                        .text_size(px(9.))
+                        .text_color(theme::muted())
+                        .child(format!(
+                            "{} · {} · {}",
+                            crate::ui::common::format::format_timestamp(entry.modified),
+                            entry.permissions,
+                            entry.owner
+                        )),
+                )
                 .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                     if event.click_count() >= 2 && directory {
                         this.navigate_local(path.clone(), cx);
                     } else {
-                        this.select_local(path.clone(), cx);
+                        this.select_local_with(path.clone(), event.modifiers(), cx);
                     }
                 }))
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                        this.select_local(row_path.clone(), cx);
+                        if !this
+                            .modules
+                            .ssh
+                            .panel()
+                            .local
+                            .as_ref()
+                            .is_some_and(|browser| browser.selected_paths.contains(&row_path))
+                        {
+                            this.select_local(row_path.clone(), cx);
+                        }
                         this.ssh_local_menu(menu_entry.clone(), event.position, cx);
                         cx.stop_propagation();
                     }),
@@ -218,13 +204,20 @@ impl MintoolApp {
                 .into_any_element(),
             );
         }
-        let upload_enabled = browser.selected_file().is_some() && self.modules.ssh.remote.is_some();
+        let owner = self.modules.ssh.active_panel.clone().unwrap();
+        let drop_destination = browser.current.clone();
+        let upload_enabled =
+            !browser.selected_paths.is_empty() && self.modules.ssh.panel().remote.is_some();
         div()
+            .id("local-file-column")
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
+            .capture_any_mouse_down(
+                cx.listener(|app, _, _, _| app.modules.ssh.panel_mut().navigation_remote = false),
+            )
             .child(column_header(
                 "本地",
                 vec![
@@ -233,6 +226,12 @@ impl MintoolApp {
                         .size(ButtonSize::Sm)
                         .tooltip("后退")
                         .on_click(cx.listener(|this, _, _, cx| this.local_back(cx))),
+                    Button::new("local-forward", "→")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .tooltip("前进")
+                        .disabled(browser.forward.is_empty())
+                        .on_click(cx.listener(|app, _, _, cx| app.local_forward(cx))),
                     Button::new("local-up", "↑")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
@@ -250,10 +249,50 @@ impl MintoolApp {
                         .on_click(cx.listener(|this, _, _, cx| this.refresh_local(cx))),
                 ],
             ))
+            .child(self.ssh_listing_options(cx))
             .child(self.local_breadcrumbs(&browser.current, cx))
+            .child(self.ssh_address_bar(false))
+            .child(self.ssh_bookmarks(false, cx))
             .child(
                 div()
                     .id("local-transfer-list")
+                    .relative()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|app, event: &MouseDownEvent, _, cx| {
+                            app.ssh_box_start(false, event.position, cx)
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|app, event: &MouseMoveEvent, _, cx| {
+                        app.ssh_box_move(false, event.position, cx)
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|app, _, _, cx| {
+                            app.modules.ssh.panel_mut().selection_drag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|app, _, _, cx| {
+                            app.modules.ssh.panel_mut().selection_drag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(self.ssh_list_measure(false, cx))
+                    .child(self.ssh_box_overlay(false))
+                    .on_drop(cx.listener(move |app, item: &DragItem, _, cx| {
+                        if let DragKind::SshRemoteFiles {
+                            owner: source,
+                            paths,
+                        } = &item.kind
+                        {
+                            app.activate_ssh_panel(source.clone(), cx);
+                            app.enqueue_downloads(paths.clone(), drop_destination.clone(), cx);
+                            app.activate_ssh_panel(owner.clone(), cx);
+                        }
+                    }))
                     .flex_1()
                     .min_h_0()
                     .py_1()
@@ -277,12 +316,20 @@ impl MintoolApp {
         let filter = self
             .modules
             .ssh
+            .panel()
             .remote_filter
             .read(cx)
             .content()
             .trim()
             .to_lowercase();
         let mut rows = Vec::new();
+        if browser.current != "/" {
+            rows.push(
+                entry_row("remote-parent".into(), "..  上一级", true, 0, false)
+                    .on_click(cx.listener(|this, _, _, cx| this.remote_up(cx)))
+                    .into_any_element(),
+            );
+        }
         if let Some(error) = &browser.error {
             rows.push(
                 div()
@@ -307,15 +354,12 @@ impl MintoolApp {
                     .into_any_element(),
             );
         }
-        for entry in browser
-            .entries
-            .get(&browser.current)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        for entry in self
+            .ssh_remote_entries()
             .iter()
             .filter(|entry| filter.is_empty() || entry.name.to_lowercase().contains(&filter))
         {
-            let selected = browser.selected.as_deref() == Some(entry.path.as_str());
+            let selected = browser.selected_paths.contains(&entry.path);
             let path = entry.path.clone();
             let directory = entry.directory;
             let menu_entry = entry.clone();
@@ -328,6 +372,65 @@ impl MintoolApp {
                     entry.size,
                     selected,
                 )
+                .h(px(42.))
+                .when(directory, |row| {
+                    let destination = entry.path.clone();
+                    let external_destination = destination.clone();
+                    let owner = self.modules.ssh.active_panel.clone().unwrap();
+                    let external_owner = owner.clone();
+                    row.on_drop(cx.listener(move |app, item: &DragItem, _, cx| {
+                        if let DragKind::Files(paths) = &item.kind {
+                            app.activate_ssh_panel(owner.clone(), cx);
+                            app.enqueue_uploads(paths.clone(), destination.clone(), cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .on_drop(cx.listener(
+                        move |app, paths: &ExternalPaths, _, cx| {
+                            app.activate_ssh_panel(external_owner.clone(), cx);
+                            app.enqueue_uploads(
+                                paths.paths().to_vec(),
+                                external_destination.clone(),
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        },
+                    ))
+                })
+                .relative()
+                .child(self.ssh_row_measure(true, entry.path.clone(), cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_drag(
+                    DragItem {
+                        kind: DragKind::SshRemoteFiles {
+                            owner: self.modules.ssh.active_panel.clone().unwrap(),
+                            paths: if selected {
+                                self.ssh_remote_entries()
+                                    .iter()
+                                    .filter(|entry| browser.selected_paths.contains(&entry.path))
+                                    .map(|entry| (entry.path.clone(), entry.directory))
+                                    .collect()
+                            } else {
+                                vec![(entry.path.clone(), entry.directory)]
+                            },
+                        },
+                        name: entry.name.clone(),
+                    },
+                    |item, _, _, cx| cx.new(|_| item.clone()),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .pl(px(22.))
+                        .flex_none()
+                        .text_size(px(9.))
+                        .text_color(theme::muted())
+                        .child(format!(
+                            "{} · {} · {}:{}",
+                            entry.modified, entry.permissions, entry.owner, entry.group
+                        )),
+                )
                 .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                     if event.click_count() >= 2 {
                         if directory {
@@ -336,13 +439,22 @@ impl MintoolApp {
                             this.open_remote_file(path.clone(), cx);
                         }
                     } else {
-                        this.select_remote(path.clone(), cx);
+                        this.select_remote_with(path.clone(), event.modifiers(), cx);
                     }
                 }))
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                        this.select_remote(row_path.clone(), cx);
+                        if !this
+                            .modules
+                            .ssh
+                            .panel()
+                            .remote
+                            .as_ref()
+                            .is_some_and(|browser| browser.selected_paths.contains(&row_path))
+                        {
+                            this.select_remote(row_path.clone(), cx);
+                        }
                         this.ssh_remote_menu(menu_entry.clone(), event.position, cx);
                         cx.stop_propagation();
                     }),
@@ -350,13 +462,21 @@ impl MintoolApp {
                 .into_any_element(),
             );
         }
-        let download_enabled = selected_remote_file(browser).is_some();
+        let owner = self.modules.ssh.active_panel.clone().unwrap();
+        let external_owner = owner.clone();
+        let drop_destination = browser.current.clone();
+        let external_destination = drop_destination.clone();
+        let download_enabled = !browser.selected_paths.is_empty();
         div()
+            .id("remote-file-column")
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
+            .capture_any_mouse_down(
+                cx.listener(|app, _, _, _| app.modules.ssh.panel_mut().navigation_remote = true),
+            )
             .child(column_header(
                 "远程",
                 vec![
@@ -364,11 +484,19 @@ impl MintoolApp {
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
                         .tooltip("后退")
+                        .disabled(browser.back.is_empty())
                         .on_click(cx.listener(|this, _, _, cx| this.remote_back(cx))),
-                    Button::new("remote-up", "↑")
+                    Button::new("remote-forward", "→")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .tooltip("前进")
+                        .disabled(browser.forward.is_empty())
+                        .on_click(cx.listener(|app, _, _, cx| app.remote_forward(cx))),
+                    Button::new("remote-up", "上一级")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
                         .tooltip("上一级")
+                        .disabled(browser.current == "/" || browser.current.is_empty())
                         .on_click(cx.listener(|this, _, _, cx| this.remote_up(cx))),
                     Button::new("remote-home", "⌂")
                         .variant(ButtonVariant::Ghost)
@@ -390,7 +518,7 @@ impl MintoolApp {
                     .border_b_1()
                     .border_color(theme::border())
                     .child(
-                        Input::new(&self.modules.ssh.remote_filter)
+                        Input::new(&self.modules.ssh.panel().remote_filter)
                             .map(|mut input| {
                                 input.style().align_items = Some(AlignItems::Stretch);
                                 input
@@ -402,10 +530,53 @@ impl MintoolApp {
                             .prefix(Icon::new("search").size(px(13.)).color(theme::muted())),
                     ),
             )
+            .child(self.ssh_listing_options(cx))
             .child(self.remote_breadcrumbs(&browser.current, cx))
+            .child(self.ssh_address_bar(true))
+            .child(self.ssh_bookmarks(true, cx))
             .child(
                 div()
                     .id("remote-transfer-list")
+                    .relative()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|app, event: &MouseDownEvent, _, cx| {
+                            app.ssh_box_start(true, event.position, cx)
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|app, event: &MouseMoveEvent, _, cx| {
+                        app.ssh_box_move(true, event.position, cx)
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|app, _, _, cx| {
+                            app.modules.ssh.panel_mut().selection_drag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|app, _, _, cx| {
+                            app.modules.ssh.panel_mut().selection_drag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(self.ssh_list_measure(true, cx))
+                    .child(self.ssh_box_overlay(true))
+                    .on_drop(cx.listener(move |app, item: &DragItem, _, cx| {
+                        app.activate_ssh_panel(owner.clone(), cx);
+                        if let DragKind::Files(paths) = &item.kind {
+                            app.enqueue_uploads(paths.clone(), drop_destination.clone(), cx);
+                        }
+                    }))
+                    .on_drop(cx.listener(move |app, paths: &ExternalPaths, _, cx| {
+                        app.activate_ssh_panel(external_owner.clone(), cx);
+                        app.enqueue_uploads(
+                            paths.paths().to_vec(),
+                            external_destination.clone(),
+                            cx,
+                        );
+                    }))
                     .flex_1()
                     .min_h_0()
                     .py_1()
@@ -468,13 +639,27 @@ impl MintoolApp {
     }
 
     fn remote_breadcrumbs(&self, current: &str, cx: &mut Context<Self>) -> AnyElement {
+        let absolute = current.starts_with('/');
         let mut row = breadcrumb_bar().child(
-            breadcrumb_chip(SharedString::from("remote-crumb-home"), "~".to_string())
-                .on_click(cx.listener(|this, _, _, cx| this.remote_home(cx))),
+            breadcrumb_chip(
+                SharedString::from("remote-crumb-root"),
+                if absolute { "/" } else { "~" }.to_string(),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if absolute {
+                    this.navigate_remote("/".into(), cx);
+                } else {
+                    this.remote_home(cx);
+                }
+            })),
         );
-        let mut cumulative = String::new();
+        let mut cumulative = if absolute {
+            "/".to_string()
+        } else {
+            String::new()
+        };
         for segment in current.split('/').filter(|segment| !segment.is_empty()) {
-            if !cumulative.is_empty() {
+            if !cumulative.is_empty() && cumulative != "/" {
                 cumulative.push('/');
             }
             cumulative.push_str(segment);
@@ -505,30 +690,38 @@ fn entry_row(
         .h(px(24.))
         .px_2()
         .flex()
-        .items_center()
-        .gap_2()
+        .flex_col()
         .rounded_sm()
         .cursor_pointer()
         .when(selected, |row| row.bg(theme::selected()))
         .hover(|row| row.bg(theme::elevated()))
-        .child(file_icon(Path::new(name), directory, false))
         .child(
             div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_size(px(11.))
-                .child(name.to_string()),
+                .w_full()
+                .h(px(24.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(file_icon(Path::new(name), directory, false))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(11.))
+                        .child(name.to_string()),
+                )
+                .when(!directory, |row| {
+                    row.child(
+                        div()
+                            .flex_none()
+                            .text_size(px(9.))
+                            .text_color(theme::muted())
+                            .child(format_size(size)),
+                    )
+                }),
         )
-        .when(!directory, |row| {
-            row.child(
-                div()
-                    .flex_none()
-                    .text_size(px(9.))
-                    .text_color(theme::muted())
-                    .child(format_size(size)),
-            )
-        })
 }
 
 fn column_header(title: &'static str, buttons: Vec<Button>) -> Div {

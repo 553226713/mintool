@@ -9,10 +9,16 @@ pub fn join_remote(parent: &str, name: &str) -> String {
 }
 
 pub fn parent_of(path: &str) -> &str {
-    path.trim_end_matches('/')
+    let parent = path
+        .trim_end_matches('/')
         .rsplit_once('/')
         .map(|(parent, _)| parent)
-        .unwrap_or("")
+        .unwrap_or("");
+    if parent.is_empty() && path.starts_with('/') {
+        "/"
+    } else {
+        parent
+    }
 }
 
 pub fn basename(path: &str) -> &str {
@@ -20,4 +26,12 @@ pub fn basename(path: &str) -> &str {
         .rsplit('/')
         .next()
         .unwrap_or(path)
+}
+
+pub fn directory_command(path: &str) -> String {
+    if path.is_empty() {
+        "cd".into()
+    } else {
+        format!("cd -- '{}'", path.replace('\'', "'\\''"))
+    }
 }

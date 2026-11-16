@@ -50,7 +50,8 @@ fn render_row(
     screen: &vt100::Screen,
     row: u16,
     cols: u16,
-    selection: Option<((u16, u16), (u16, u16))>,
+    selection: Option<((usize, u16), (usize, u16))>,
+    search: &[(usize, u16, u16)],
     font: &Font,
 ) -> RenderedRow {
     let mut text = String::with_capacity(cols as usize);
@@ -73,7 +74,15 @@ fn render_row(
         if cell.inverse() {
             std::mem::swap(&mut foreground, &mut background);
         }
-        if selection.is_some_and(|(start, end)| (row, col) >= start && (row, col) <= end) {
+        let absolute = screen.scrollback_len() - screen.scrollback() + row as usize;
+        if search
+            .iter()
+            .any(|&(line, left, right)| line == absolute && col >= left && col <= right)
+        {
+            background = theme::warning().opacity(0.3);
+        }
+        if selection.is_some_and(|(start, end)| (absolute, col) >= start && (absolute, col) <= end)
+        {
             background = theme::terminal_selection();
         }
 
@@ -132,7 +141,16 @@ fn render_terminal(view: &TerminalView, font: &Font) -> TerminalFrame {
     let (rows, cols) = session.size;
     TerminalFrame {
         rows: (0..rows)
-            .map(|row| render_row(screen, row, cols, view.selection, font))
+            .map(|row| {
+                render_row(
+                    screen,
+                    row,
+                    cols,
+                    view.selection,
+                    &view.search_matches,
+                    font,
+                )
+            })
             .collect(),
         cursor: screen.cursor_position(),
         hide_cursor: screen.hide_cursor(),
@@ -305,7 +323,7 @@ mod tests {
             vt100::Parser::new(NonZeroU16::new(2).unwrap(), NonZeroU16::new(12).unwrap(), 0);
         parser.process("abc中文".as_bytes());
 
-        let row = render_row(parser.screen(), 0, 12, None, &font("JetBrains Mono"));
+        let row = render_row(parser.screen(), 0, 12, None, &[], &font("JetBrains Mono"));
 
         assert_eq!(row.text.trim_end(), "abc中文");
         assert_eq!(row.runs.len(), 1);
@@ -317,7 +335,7 @@ mod tests {
             vt100::Parser::new(NonZeroU16::new(2).unwrap(), NonZeroU16::new(12).unwrap(), 0);
         parser.process(b"\x1b[41mred\x1b[0m");
 
-        let row = render_row(parser.screen(), 0, 12, None, &font("JetBrains Mono"));
+        let row = render_row(parser.screen(), 0, 12, None, &[], &font("JetBrains Mono"));
 
         assert_eq!(row.backgrounds.len(), 1);
         assert_eq!(row.backgrounds[0].col, 0);

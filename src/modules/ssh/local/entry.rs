@@ -6,4 +6,7 @@ pub struct LocalEntry {
     pub name: String,
     pub directory: bool,
     pub size: u64,
+    pub modified: u64,
+    pub permissions: String,
+    pub owner: String,
 }

@@ -1,7 +1,7 @@
 //! Full-window editor for remote files; saving writes a temp file and uploads it.
 
 use super::model::SshConnection;
-use super::sftp::{self, RemoteEntry};
+use super::sftp::RemoteEntry;
 use crate::app::MintoolApp;
 use crate::ui::preview::file_preview::language_name;
 use crate::ui::theme;
@@ -10,10 +10,13 @@ use gpui_component::input::{Input, InputState, TabSize};
 use std::path::Path;
 
 pub struct RemoteEdit {
+    pub token: uuid::Uuid,
+    pub owner: Option<(crate::model::session::SessionKey, u64)>,
     pub connection: SshConnection,
     pub remote: String,
     pub name: String,
     pub remote_dir: String,
+    pub original: String,
     pub editor: Option<Entity<InputState>>,
     pub pending_text: Option<String>,
     pub loading: bool,
@@ -21,114 +24,148 @@ pub struct RemoteEdit {
 }
 
 impl MintoolApp {
+    pub(crate) fn remote_edit_dirty(&self, cx: &Context<Self>) -> bool {
+        self.remote_edit.as_ref().is_some_and(|state| {
+            state
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.read(cx).value().as_str() != state.original)
+        })
+    }
+
     pub(crate) fn open_remote_edit(&mut self, entry: RemoteEntry, cx: &mut Context<Self>) {
-        let Some(remote) = &self.modules.ssh.remote else {
+        if self.remote_edit.is_some() {
+            return;
+        }
+        let Some(remote) = &self.modules.ssh.panel().remote else {
             return;
         };
         let Some(connection) = self.connection_of(&remote.connection) else {
             return;
         };
-        let remote_dir = remote.current.clone();
+        let token = uuid::Uuid::new_v4();
         self.remote_edit = Some(RemoteEdit {
+            token,
+            owner: self.modules.ssh.active_panel.clone(),
             connection: connection.clone(),
             remote: entry.path.clone(),
-            name: entry.name.clone(),
-            remote_dir,
+            name: entry.name,
+            remote_dir: remote.current.clone(),
+            original: String::new(),
             editor: None,
             pending_text: None,
             loading: true,
             saving: false,
         });
-        cx.notify();
         let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
-            let remote_path = entry.path.clone();
             let result = executor
-                .spawn(async move {
-                    let temp = sftp::download_to_temp(&connection, &remote_path)?;
-                    let text = std::fs::read_to_string(&temp)?;
-                    let _ = std::fs::remove_file(&temp);
-                    Ok::<_, anyhow::Error>(text)
-                })
+                .spawn(async move { super::remote_save::read_text(&connection, &entry.path) })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                match result {
-                    Ok(text) => {
-                        if let Some(state) = &mut this.remote_edit {
-                            state.loading = false;
+            let _ = this.update(cx, |app, cx| {
+                if let Some(state) = app
+                    .remote_edit
+                    .as_mut()
+                    .filter(|state| state.token == token)
+                {
+                    state.loading = false;
+                    match result {
+                        Ok(text) => {
+                            state.original = text.clone();
                             state.pending_text = Some(text);
                         }
+                        Err(error) => {
+                            app.error = Some(format!("无法编辑远程文件：{error:#}"));
+                            app.remote_edit = None;
+                        }
                     }
-                    Err(error) => {
-                        this.remote_edit = None;
-                        this.error = Some(format!("无法编辑远程文件：{error:#}"));
-                    }
+                    cx.notify();
                 }
-                cx.notify();
             });
         })
         .detach();
-    }
-
-    pub(crate) fn close_remote_edit(&mut self, cx: &mut Context<Self>) {
-        self.remote_edit = None;
         cx.notify();
     }
 
-    fn save_remote_edit(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close_remote_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_edit.as_ref().is_some_and(|state| state.saving) {
+            return;
+        }
+        if self.remote_edit_dirty(cx) {
+            self.show_dialog(
+                crate::ui::dialogs::Dialog::RemoteEdit(super::edit_dialog::RemoteEditDialog {
+                    quit: false,
+                }),
+                window,
+                cx,
+            );
+        } else {
+            self.remote_edit = None;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn save_remote_edit(&mut self, quit: bool, cx: &mut Context<Self>) {
         let Some(state) = &self.remote_edit else {
             return;
         };
+        if state.saving {
+            return;
+        }
         let Some(editor) = &state.editor else {
             return;
         };
         let text = editor.read(cx).value().to_string();
+        let token = state.token;
+        let owner = state.owner.clone();
         let connection = state.connection.clone();
         let remote = state.remote.clone();
-        let remote_dir = state.remote_dir.clone();
-        let name = state.name.clone();
-        if let Some(state) = &mut self.remote_edit {
-            state.saving = true;
-        }
-        cx.notify();
+        let original = state.original.clone();
+        let directory = state.remote_dir.clone();
+        self.remote_edit.as_mut().unwrap().saving = true;
         let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
             let result = executor
-                .spawn(async move {
-                    let temp = std::env::temp_dir()
-                        .join("mintool-remote-edit")
-                        .join(format!("{}.tmp", uuid::Uuid::new_v4()));
-                    if let Some(parent) = temp.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&temp, text.as_bytes())?;
-                    let result = sftp::upload_to(&connection, &temp, &remote);
-                    let _ = std::fs::remove_file(&temp);
-                    result
-                })
+                .spawn(
+                    async move { super::remote_save::save(&connection, &remote, &original, &text) },
+                )
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update(cx, |app, cx| {
+                if !app
+                    .remote_edit
+                    .as_ref()
+                    .is_some_and(|state| state.token == token)
+                {
+                    return;
+                }
                 match result {
                     Ok(()) => {
-                        this.remote_edit = None;
-                        this.error = Some(format!("已保存远程文件 {name}"));
-                        if let Some(browser) = &mut this.modules.ssh.remote {
-                            browser.entries.remove(&remote_dir);
-                            browser.loading.remove(&remote_dir);
+                        app.remote_edit = None;
+                        if let Some(panel) = owner
+                            .as_ref()
+                            .and_then(|key| app.modules.ssh.panels.get_mut(key))
+                        {
+                            if let Some(browser) = &mut panel.remote {
+                                browser.entries.remove(&directory);
+                            }
                         }
-                        this.start_remote_load(remote_dir.clone(), cx);
+                        if quit {
+                            app.quit_confirmed = true;
+                            cx.quit();
+                        } else {
+                            app.error = Some("远程文件已保存".into());
+                        }
                     }
                     Err(error) => {
-                        if let Some(state) = &mut this.remote_edit {
-                            state.saving = false;
-                        }
-                        this.error = Some(format!("保存远程文件失败：{error:#}"));
+                        app.remote_edit.as_mut().unwrap().saving = false;
+                        app.error = Some(format!("保存失败，编辑内容已保留：{error:#}"));
                     }
                 }
                 cx.notify();
             });
         })
         .detach();
+        cx.notify();
     }
 
     pub(crate) fn render_remote_edit(
@@ -230,7 +267,7 @@ impl MintoolApp {
                                     div()
                                         .text_size(px(10.))
                                         .text_color(theme::muted())
-                                        .child("保存后上传覆盖远端文件"),
+                                        .child("保存前检查远端修改"),
                                 )
                                 .child(
                                     adabraka_ui::components::button::Button::new(
@@ -242,9 +279,9 @@ impl MintoolApp {
                                     )
                                     .size(adabraka_ui::components::button::ButtonSize::Sm)
                                     .disabled(saving || editor.is_none())
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.save_remote_edit(cx)),
-                                    ),
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| this.save_remote_edit(false, cx),
+                                    )),
                                 )
                                 .child(
                                     adabraka_ui::components::button::Button::new(
@@ -253,9 +290,9 @@ impl MintoolApp {
                                     )
                                     .variant(adabraka_ui::components::button::ButtonVariant::Ghost)
                                     .size(adabraka_ui::components::button::ButtonSize::Sm)
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.close_remote_edit(cx)),
-                                    ),
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| this.close_remote_edit(window, cx),
+                                    )),
                                 ),
                         )
                         .child(body),

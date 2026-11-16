@@ -5,6 +5,23 @@ use mintool::modules::ssh::{
 use std::path::PathBuf;
 
 #[test]
+fn remote_paths_can_navigate_above_home_and_keep_the_root() {
+    use mintool::modules::ssh::{
+        directory::RemoteDirectory,
+        path::{join_remote, parent_of},
+    };
+    let directory = RemoteDirectory::parse("sftp> pwd\nRemote working directory: /home/tester\nsftp> cd /var/log\nsftp> pwd\nRemote working directory: /var/log\nsftp> ls -la .\n-rw-r--r-- 1 root root 12 Jan 1 00:00 ./error log.txt\n").unwrap();
+    assert_eq!(directory.home, "/home/tester");
+    assert_eq!(directory.path, "/var/log");
+    assert_eq!(directory.entries[0].path, "/var/log/error log.txt");
+    assert_eq!(parent_of("/home/tester"), "/home");
+    assert_eq!(parent_of("/home"), "/");
+    assert_eq!(parent_of("/"), "/");
+    assert_eq!(join_remote("/", "etc"), "/etc");
+    assert!(RemoteDirectory::parse("sftp> pwd\n").is_err());
+}
+
+#[test]
 fn connections_can_be_grouped_reordered_and_removed() {
     let mut registry = SshRegistry::default();
     let work = registry.add_group("生产").unwrap();
@@ -174,4 +191,31 @@ fn live_sftp_lists_and_downloads() {
     std::fs::remove_file(downloaded).unwrap();
     remove_remote(&connection, "upload test.txt").unwrap();
     std::fs::remove_file(local).unwrap();
+}
+
+#[test]
+fn directory_commands_are_explicit_and_quote_shell_metacharacters() {
+    use mintool::modules::ssh::path::directory_command;
+    assert_eq!(directory_command(""), "cd");
+    assert_eq!(directory_command("/var/log"), "cd -- '/var/log'");
+    let command = directory_command("/tmp/a'b; echo wrong");
+    let result = std::process::Command::new("bash")
+        .args([
+            "-c",
+            &format!("printf '%s' {}", command.strip_prefix("cd -- ").unwrap()),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "/tmp/a'b; echo wrong"
+    );
+}
+
+#[test]
+fn atomic_remote_save_preserves_permission_bits() {
+    use mintool::modules::ssh::remote_save::permission_mode;
+    assert_eq!(permission_mode("-rw-r-----"), Some("640".into()));
+    assert_eq!(permission_mode("-rwsr-xr-x"), Some("4755".into()));
+    assert_eq!(permission_mode("drwxrwxrwt"), Some("1777".into()));
 }

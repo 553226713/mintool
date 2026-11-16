@@ -104,6 +104,9 @@ impl MintoolApp {
         cx: &mut Context<Self>,
     ) -> Self {
         settings.font_size = settings.font_size.clamp(10., 28.);
+        if settings.active_module == ModuleId::Database {
+            settings.active_module = ModuleId::Projects;
+        }
         crate::services::terminal::set_scrollback(settings.terminal_scrollback);
         let project_search = cx
             .new(|cx| gpui_component::input::InputState::new(window, cx).placeholder("搜索项目…"));
@@ -113,7 +116,6 @@ impl MintoolApp {
             .new(|cx| gpui_component::input::InputState::new(window, cx).placeholder("筛选文件…"));
         let rename_input = cx.new(InputState::new);
         let ssh_search = cx.new(|cx| InputState::new(cx).placeholder("搜索 SSH 连接…"));
-        let ssh_remote_filter = cx.new(|cx| InputState::new(cx).placeholder("筛选远端文件…"));
         let docker_search = cx.new(|cx| InputState::new(cx).placeholder("搜索容器或镜像…"));
         let database_search = cx.new(|cx| InputState::new(cx).placeholder("搜索数据库连接…"));
         let database_engine_select = cx.new(|cx| {
@@ -237,11 +239,6 @@ impl MintoolApp {
                 cx.notify();
             }
         });
-        let ssh_remote_filter_subscription = cx.subscribe(&ssh_remote_filter, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        });
         let docker_subscription = cx.subscribe(&docker_search, |_, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -270,6 +267,8 @@ impl MintoolApp {
             }
         })
         .detach();
+        let ssh_browser_preferences =
+            crate::modules::ssh::preferences::load(&storage).unwrap_or_default();
         Self {
             storage,
             settings: settings.clone(),
@@ -291,17 +290,16 @@ impl MintoolApp {
                 ssh: SshModule {
                     registry: ssh_registry,
                     search: ssh_search,
-                    remote_filter: ssh_remote_filter,
                     group_select: ssh_group_select,
                     form: ssh_form,
                     expanded: settings.ssh_sidebar,
                     opened: None,
-                    remote: None,
-                    local: None,
-                    local_visible: false,
-                    sync_terminal: false,
-                    transfer_status: None,
+                    preferences: ssh_browser_preferences,
+                    transfers: Vec::new(),
+                    active_panel: None,
+                    panels: HashMap::new(),
                     remote_previews: HashMap::new(),
+                    pane_splits: HashMap::new(),
                 },
                 docker: DockerModule::new(docker_search, settings.docker_sidebar, docker_run_form),
                 database: DatabaseModule::with_form(
@@ -359,7 +357,6 @@ impl MintoolApp {
                 filter_subscription,
                 rename_subscription,
                 ssh_subscription,
-                ssh_remote_filter_subscription,
                 docker_subscription,
                 database_subscription,
                 database_engine_subscription,
@@ -497,12 +494,11 @@ impl MintoolApp {
             }
             cx.notify();
         }
-        let transferring = self
-            .modules
-            .ssh
-            .transfer_status
-            .as_ref()
-            .is_some_and(|status| status.is_running());
+        self.pump_ssh_transfers(cx);
+        let transferring =
+            self.modules.ssh.transfers.iter().any(|task| {
+                task.state == crate::modules::ssh::transfer_task::TransferState::Running
+            });
         if transferring {
             if self
                 .transfer_tick
@@ -779,6 +775,7 @@ impl MintoolApp {
 }
 impl Drop for MintoolApp {
     fn drop(&mut self) {
+        self.modules.stop_transfers();
         crate::services::terminal_processes::TerminalProcesses::shutdown_all();
         if let Err(error) = self.save() {
             eprintln!("配置保存失败：{error:#}");

@@ -231,7 +231,7 @@ impl DialogContent for SshDialog {
                                 .identity
                                 .map(|path| path.display().to_string())
                                 .unwrap_or_default(),
-                            connection.extra_args.join(" "),
+                            shell_words::join(&connection.extra_args),
                             connection.forwards.join(" "),
                         )
                     },
@@ -328,7 +328,7 @@ impl DialogContent for SshDialog {
                 app.modules.ssh.registry.remove(id);
                 if app.modules.ssh.opened.as_deref() == Some(id.as_str()) {
                     app.modules.ssh.opened = None;
-                    app.modules.ssh.remote = None;
+                    app.modules.ssh.panel_mut().remote = None;
                 }
                 app.remove_session(&SessionKey::ssh(id.clone()), cx);
                 Ok(())

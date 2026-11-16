@@ -12,6 +12,20 @@ use gpui_component::scroll::{Scrollbar, ScrollbarHandle, ScrollbarShow};
 use std::sync::{Arc, Mutex};
 
 pub(crate) const SCROLLBAR_WIDTH: Pixels = px(16.);
+actions!(
+    mintool_terminal,
+    [Complete, BackTab, FindOutput, FindNext, FindPrevious]
+);
+
+fn terminal_keybindings() -> [KeyBinding; 5] {
+    [
+        KeyBinding::new("tab", Complete, Some("MintoolTerminal")),
+        KeyBinding::new("shift-tab", BackTab, Some("MintoolTerminal")),
+        KeyBinding::new("ctrl-shift-f", FindOutput, Some("MintoolTerminal")),
+        KeyBinding::new("f3", FindNext, Some("MintoolTerminal")),
+        KeyBinding::new("shift-f3", FindPrevious, Some("MintoolTerminal")),
+    ]
+}
 
 #[derive(Clone)]
 struct TerminalScrollbarHandle {
@@ -71,13 +85,20 @@ pub struct TerminalView {
     pub bounds: Bounds<Pixels>,
     pub cursor_bounds: Bounds<Pixels>,
     pub composition: String,
-    pub selection: Option<((u16, u16), (u16, u16))>,
+    pub selection: Option<((usize, u16), (usize, u16))>,
     pub selecting: bool,
     pub cell_size: Size<Pixels>,
     pub error: Option<String>,
     clipboard: TerminalClipboard,
+    pub(crate) search_input: Option<Entity<gpui_component::input::InputState>>,
+    pub(crate) search_matches: Vec<(usize, u16, u16)>,
+    pub(crate) search_index: usize,
+    pub(crate) search_subscription: Option<Subscription>,
 }
 impl TerminalView {
+    pub fn init(cx: &mut App) {
+        cx.bind_keys(terminal_keybindings());
+    }
     pub fn new(
         session: Arc<Mutex<TerminalSession>>,
         font_size: f32,
@@ -95,6 +116,10 @@ impl TerminalView {
             cell_size: size(px(8.), px(20.)),
             error: None,
             clipboard: TerminalClipboard::default(),
+            search_input: None,
+            search_matches: Vec::new(),
+            search_index: 0,
+            search_subscription: None,
         }
     }
     pub fn send(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
@@ -192,12 +217,16 @@ impl TerminalView {
         }
         let _ = window;
     }
-    fn cell_at(&self, point: Point<Pixels>) -> (u16, u16) {
+    fn cell_at(&self, point: Point<Pixels>) -> (usize, u16) {
         let size = lock_unpoisoned(&self.session).size;
         let col = ((point.x - self.bounds.origin.x) / self.cell_size.width).max(0.) as u16;
         let row = ((point.y - self.bounds.origin.y) / self.cell_size.height).max(0.) as u16;
+        let session = lock_unpoisoned(&self.session);
+        let parser = lock_unpoisoned(&session.parser);
+        let screen = parser.screen();
         (
-            row.min(size.0.saturating_sub(1)),
+            screen.scrollback_len() - screen.scrollback()
+                + row.min(size.0.saturating_sub(1)) as usize,
             col.min(size.1.saturating_sub(1)),
         )
     }
@@ -225,31 +254,7 @@ impl TerminalView {
         let Some((start, end)) = self.selection else {
             return screen.contents();
         };
-        let (start, end) = if start <= end {
-            (start, end)
-        } else {
-            (end, start)
-        };
-        let mut lines = Vec::new();
-        for row in start.0..=end.0 {
-            let left = if row == start.0 { start.1 } else { 0 };
-            let right = if row == end.0 {
-                end.1
-            } else {
-                session.size.1.saturating_sub(1)
-            };
-            let mut line = String::new();
-            for col in left..=right {
-                if let Some(cell) = screen.cell(row, col) {
-                    if !cell.is_wide_continuation() {
-                        let s = cell.contents();
-                        line.push_str(if s.is_empty() { " " } else { s });
-                    }
-                }
-            }
-            lines.push(line.trim_end().to_string());
-        }
-        lines.join("\n")
+        crate::services::terminal_text::selected_text(screen, start, end)
     }
 }
 impl Focusable for TerminalView {
@@ -268,10 +273,28 @@ impl Render for TerminalView {
         div()
             .id("terminal")
             .size_full()
+            .relative()
             .overflow_hidden()
             .bg(theme::background())
             .key_context("MintoolTerminal")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &Complete, _, cx| {
+                this.send(b"\t", cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &BackTab, _, cx| {
+                this.send(b"\x1b[Z", cx);
+                cx.stop_propagation();
+            }))
+            .on_action(
+                cx.listener(|this, _: &FindOutput, window, cx| {
+                    this.open_terminal_search(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &FindNext, _, cx| this.next_terminal_match(1, cx)))
+            .on_action(
+                cx.listener(|this, _: &FindPrevious, _, cx| this.next_terminal_match(-1, cx)),
+            )
             .cursor(CursorStyle::IBeam)
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
@@ -281,6 +304,11 @@ impl Render for TerminalView {
                     this.selecting = true;
                     let cell = this.cell_at(event.position);
                     this.selection = Some((cell, cell));
+                    if event.click_count >= 2 {
+                        this.select_terminal_word(cell, event.click_count >= 3, cx);
+                        this.selecting = false;
+                        cx.write_to_clipboard(ClipboardItem::new_string(this.selected_text()));
+                    }
                     cx.notify();
                 }),
             )
@@ -297,6 +325,11 @@ impl Render for TerminalView {
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if this.selecting {
+                    if event.position.y < this.bounds.origin.y {
+                        lock_unpoisoned(&this.session).scroll(1);
+                    } else if event.position.y > this.bounds.bottom() {
+                        lock_unpoisoned(&this.session).scroll(-1);
+                    }
                     let cell = this.cell_at(event.position);
                     if let Some((start, _)) = this.selection {
                         this.selection = Some((start, cell));
@@ -320,6 +353,7 @@ impl Render for TerminalView {
                 cx.stop_propagation();
             }))
             .child(TerminalSurface { view: cx.entity() })
+            .children(self.render_terminal_search(cx))
             .child(
                 Scrollbar::vertical(&scrollbar)
                     .id(("terminal-scrollbar", entity_id))
@@ -330,8 +364,31 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{scrollback_position, scrollbar_offset};
-    use gpui::px;
+    use super::{scrollback_position, scrollbar_offset, terminal_keybindings, BackTab, Complete};
+    use gpui::{px, KeyBinding, KeyContext, Keymap, Keystroke};
+
+    #[test]
+    fn terminal_tab_takes_precedence_over_root_focus_navigation() {
+        let mut keymap = Keymap::default();
+        keymap.add_bindings(terminal_keybindings());
+        // Even later bindings at the Root must lose to the terminal context.
+        keymap.add_bindings([KeyBinding::new("tab", BackTab, Some("Root"))]);
+        let root = KeyContext::parse("Root").unwrap();
+        let terminal = KeyContext::parse("MintoolTerminal").unwrap();
+        let (bindings, pending) = keymap.bindings_for_input(
+            &[Keystroke::parse("tab").unwrap()],
+            &[root.clone(), terminal.clone()],
+        );
+        assert!(!pending);
+        assert!(bindings[0].action().partial_eq(&Complete));
+        let (bindings, _) = keymap.bindings_for_input(
+            &[Keystroke::parse("shift-tab").unwrap()],
+            &[root.clone(), terminal],
+        );
+        assert!(bindings[0].action().partial_eq(&BackTab));
+        let (bindings, _) = keymap.bindings_for_input(&[Keystroke::parse("tab").unwrap()], &[root]);
+        assert!(bindings[0].action().partial_eq(&BackTab));
+    }
 
     #[test]
     fn scrollbar_maps_live_view_to_bottom_and_history_to_top() {

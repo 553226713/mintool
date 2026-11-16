@@ -46,16 +46,7 @@ impl SessionView {
     /// Neutral workspace description owned by the SSH module.
     pub fn ssh(connection: &SshConnection) -> Self {
         let mut launched = launch(connection);
-        if let Some(password) = &launched.password {
-            if let Some(executable) = askpass_executable() {
-                launched.envs = vec![
-                    ("SSH_ASKPASS".to_string(), executable.display().to_string()),
-                    ("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()),
-                    ("MINTOOL_ASKPASS".to_string(), "1".to_string()),
-                    ("MINTOOL_ASKPASS_PASSWORD".to_string(), password.clone()),
-                ];
-            }
-        }
+        launched.envs = super::transport::authentication_environment(connection);
         Self {
             key: SessionKey::new(ModuleId::Ssh, connection.id.clone()),
             title: connection.name.clone(),
@@ -72,22 +63,7 @@ impl SessionView {
 /// Build the system `ssh` invocation. Key/agent authentication is handled by
 /// OpenSSH itself; a saved password is fed through `SSH_ASKPASS`.
 pub fn launch(connection: &SshConnection) -> SshLaunch {
-    let mut args = Vec::new();
-    if connection.port != 22 {
-        args.push("-p".to_string());
-        args.push(connection.port.to_string());
-    }
-    if let Some(identity) = &connection.identity {
-        args.push("-i".to_string());
-        args.push(identity.display().to_string());
-    }
-    args.extend([
-        "-o".to_string(),
-        "ServerAliveInterval=30".to_string(),
-        "-o".to_string(),
-        "ServerAliveCountMax=3".to_string(),
-    ]);
-    args.extend(connection.extra_args.iter().cloned());
+    let mut args = super::transport::connection_arguments(connection);
     for forward in &connection.forwards {
         let (flag, target) = if let Some(target) = forward.strip_prefix("R:") {
             ("-R", target)
@@ -99,7 +75,6 @@ pub fn launch(connection: &SshConnection) -> SshLaunch {
         args.push(flag.to_string());
         args.push(target.to_string());
     }
-    args.extend(control_options());
     args.push(connection.target());
     SshLaunch {
         program: "ssh".to_string(),

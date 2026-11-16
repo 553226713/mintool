@@ -259,6 +259,7 @@ impl LastLayout {
 
 /// InputState to keep editing state of the [`super::Input`].
 pub struct InputState {
+    pub(super) line_backgrounds: Vec<(Range<usize>, gpui::Hsla)>,
     pub(super) focus_handle: FocusHandle,
     pub(super) mode: InputMode,
     pub(super) text: Rope,
@@ -337,6 +338,18 @@ pub struct InputState {
 impl EventEmitter<InputEvent> for InputState {}
 
 impl InputState {
+    /// Set background colors for zero-based logical line ranges in a code editor.
+    pub fn set_line_backgrounds(
+        &mut self,
+        backgrounds: Vec<(Range<usize>, gpui::Hsla)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.line_backgrounds != backgrounds {
+            self.line_backgrounds = backgrounds;
+            cx.notify();
+        }
+    }
+
     /// Create a Input state with default [`InputMode::SingleLine`] mode.
     ///
     /// See also: [`Self::multi_line`], [`Self::auto_grow`] to set other mode.
@@ -367,6 +380,7 @@ impl InputState {
         let mouse_context_menu = MouseContextMenu::new(cx.entity(), window, cx);
 
         Self {
+            line_backgrounds: Vec::new(),
             focus_handle: focus_handle.clone(),
             text: "".into(),
             text_wrapper: TextWrapper::new(text_style.font(), window.rem_size(), None),

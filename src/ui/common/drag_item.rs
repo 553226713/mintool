@@ -10,6 +10,10 @@ pub enum DragKind {
     DatabaseConnection(String),
     DatabaseGroup(String),
     Files(Vec<PathBuf>),
+    SshRemoteFiles {
+        owner: (crate::model::session::SessionKey, u64),
+        paths: Vec<(String, bool)>,
+    },
 }
 #[derive(Clone)]
 pub struct DragItem {

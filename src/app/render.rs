@@ -144,14 +144,14 @@ impl Render for MintoolApp {
         }
         let auxiliary = match self.modules.active {
             ModuleId::Projects => true,
-            ModuleId::Ssh => self.modules.ssh.opened.is_some(),
+            ModuleId::Ssh => false,
             ModuleId::Docker => docker_auxiliary,
             ModuleId::Database => false,
         };
         let explorer = if auxiliary {
             Some(match self.modules.active {
                 ModuleId::Projects => self.render_explorer(cx),
-                ModuleId::Ssh => self.render_ssh_explorer(cx),
+                ModuleId::Ssh => div().into_any_element(),
                 ModuleId::Docker => match &docker_session {
                     Some(session) => self.render_docker_session_panel(session, window, cx),
                     None => div().into_any_element(),
@@ -226,9 +226,9 @@ impl Render for MintoolApp {
             .text_color(theme::text())
             .text_size(px(13.))
             .font_family("Inter")
-            .capture_action(cx.listener(|this, _: &InputEscape, _, cx| {
-                if this.remote_edit.is_some() {
-                    this.close_remote_edit(cx);
+            .capture_action(cx.listener(|this, _: &InputEscape, window, cx| {
+                if this.remote_edit.is_some() && this.dialog.is_none() {
+                    this.close_remote_edit(window, cx);
                     cx.stop_propagation();
                 } else if this.command_palette.is_some() {
                     this.close_command_palette(cx);
@@ -277,9 +277,12 @@ impl Render for MintoolApp {
                         this.open_command_palette(window, cx);
                     }
                     cx.stop_propagation();
-                } else if this.remote_edit.is_some() {
-                    if event.keystroke.key == "escape" {
-                        this.close_remote_edit(cx);
+                } else if this.remote_edit.is_some() && this.dialog.is_none() {
+                    if control && event.keystroke.key.eq_ignore_ascii_case("s") {
+                        this.save_remote_edit(false, cx);
+                        cx.stop_propagation();
+                    } else if event.keystroke.key == "escape" {
+                        this.close_remote_edit(window, cx);
                         cx.stop_propagation();
                     }
                 } else if this.command_palette.is_some() {

@@ -39,9 +39,4 @@ impl ModuleId {
     }
 }
 
-pub const MODULES: [ModuleId; 4] = [
-    ModuleId::Projects,
-    ModuleId::Ssh,
-    ModuleId::Docker,
-    ModuleId::Database,
-];
+pub const MODULES: [ModuleId; 3] = [ModuleId::Projects, ModuleId::Ssh, ModuleId::Docker];

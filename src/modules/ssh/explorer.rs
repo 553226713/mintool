@@ -1,46 +1,34 @@
 use super::dialogs::SshDialog;
 use super::{
-    browser::RemoteBrowser,
     local::{LocalBrowser, LocalEntry},
     model::SshConnection,
-    module::TransferStatus,
     sftp::{self, RemoteEntry},
 };
 use crate::app::MintoolApp;
-use crate::modules::ssh::path::{basename, join_remote, parent_of};
+use crate::modules::ssh::path::parent_of;
 use crate::modules::SessionKey;
-use crate::services::mutex::lock_unpoisoned;
 use crate::ui::dialogs::Dialog;
 use adabraka_ui::navigation::menu::MenuItem;
 use gpui::*;
-use std::{
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-};
+use std::path::{Path, PathBuf};
 
 impl MintoolApp {
     pub(crate) fn ensure_remote_browser(&mut self) {
         let Some(connection) = self.modules.ssh.opened.clone() else {
-            self.modules.ssh.remote = None;
             return;
         };
-        if self
-            .modules
-            .ssh
-            .remote
-            .as_ref()
-            .is_none_or(|browser| browser.connection != connection)
-        {
-            self.modules.ssh.remote = Some(RemoteBrowser::new(connection));
-            self.modules.ssh.transfer_status = None;
+        let key = SessionKey::ssh(connection);
+        let Some(workspace) = self.workspaces.get(&key) else {
+            return;
+        };
+        let pane = workspace.state.focused;
+        if self.modules.ssh.panels.contains_key(&(key.clone(), pane)) {
+            self.modules.ssh.active_panel = Some((key, pane));
         }
     }
 
     pub(crate) fn start_remote_load(&mut self, path: String, cx: &mut Context<Self>) {
-        let Some(browser) = &self.modules.ssh.remote else {
+        let Some(browser) = &self.modules.ssh.panel().remote else {
             return;
         };
         if browser.entries.contains_key(&path) || browser.loading.contains(&path) {
@@ -58,66 +46,101 @@ impl MintoolApp {
         else {
             return;
         };
-        if let Some(browser) = &mut self.modules.ssh.remote {
+        if let Some(browser) = &mut self.modules.ssh.panel_mut().remote {
             browser.loading.insert(path.clone());
             browser.error = None;
         }
         let executor = cx.background_executor().clone();
+        let owner = self.modules.ssh.active_panel.clone();
         cx.spawn(async move |this, cx| {
             let load_path = path.clone();
             let result = executor
-                .spawn(async move { sftp::list_directory(&connection, &load_path) })
+                .spawn(async move { sftp::read_directory(&connection, &load_path) })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                if let Some(browser) = &mut this.modules.ssh.remote {
-                    if browser.connection != browser_connection {
-                        return;
-                    }
-                    browser.loading.remove(&path);
-                    match result {
-                        Ok(entries) => {
-                            browser.entries.insert(path, entries);
+            let _ = this.update(
+                cx,
+                super::scope::scoped(owner, |this, cx| {
+                    if let Some(browser) = &mut this.modules.ssh.panel_mut().remote {
+                        if browser.connection != browser_connection {
+                            return;
                         }
-                        Err(error) => browser.error = Some(format!("{error:#}")),
+                        browser.loading.remove(&path);
+                        match result {
+                            Ok(directory) => {
+                                browser.home = Some(directory.home);
+                                if browser.current == path {
+                                    browser.current = directory.path.clone();
+                                }
+                                browser.entries.insert(directory.path, directory.entries);
+                            }
+                            Err(error) if browser.current == path => {
+                                browser.error = Some(format!("{error:#}"))
+                            }
+                            Err(_) => {}
+                        }
                     }
-                }
-                cx.notify();
-            });
+                    cx.notify();
+                }),
+            );
         })
         .detach();
     }
 
     pub(crate) fn navigate_remote(&mut self, path: String, cx: &mut Context<Self>) {
-        let Some(browser) = &mut self.modules.ssh.remote else {
+        let Some(browser) = &mut self.modules.ssh.panel_mut().remote else {
             return;
         };
         if browser.current != path {
             browser.back.push(browser.current.clone());
+            browser.forward.clear();
         }
         browser.current = path.clone();
         browser.selected = None;
-        if self.modules.ssh.sync_terminal {
-            self.sync_ssh_terminal(&path, cx);
-        }
+        browser.selected_paths.clear();
+        browser.error = None;
         self.start_remote_load(path, cx);
-        cx.notify();
+        self.changed(cx);
     }
 
     pub(crate) fn remote_back(&mut self, cx: &mut Context<Self>) {
-        let Some(browser) = &mut self.modules.ssh.remote else {
+        let Some(browser) = &mut self.modules.ssh.panel_mut().remote else {
             return;
         };
         let Some(previous) = browser.back.pop() else {
             return;
         };
+        browser.forward.push(browser.current.clone());
         browser.current = previous.clone();
         browser.selected = None;
+        browser.selected_paths.clear();
+        browser.error = None;
         self.start_remote_load(previous, cx);
         cx.notify();
     }
 
+    pub(crate) fn remote_forward(&mut self, cx: &mut Context<Self>) {
+        let Some(browser) = &mut self.modules.ssh.panel_mut().remote else {
+            return;
+        };
+        let Some(next) = browser.forward.pop() else {
+            return;
+        };
+        browser.back.push(browser.current.clone());
+        browser.current = next.clone();
+        browser.error = None;
+        browser.selected = None;
+        browser.selected_paths.clear();
+        self.start_remote_load(next, cx);
+        self.changed(cx);
+    }
+    pub(crate) fn local_forward(&mut self, cx: &mut Context<Self>) {
+        if let Some(browser) = &mut self.modules.ssh.panel_mut().local {
+            browser.forward();
+        }
+        self.changed(cx);
+    }
     pub(crate) fn remote_up(&mut self, cx: &mut Context<Self>) {
-        let Some(browser) = &self.modules.ssh.remote else {
+        let Some(browser) = &self.modules.ssh.panel().remote else {
             return;
         };
         let parent = parent_of(&browser.current).to_string();
@@ -125,104 +148,144 @@ impl MintoolApp {
     }
 
     pub(crate) fn remote_home(&mut self, cx: &mut Context<Self>) {
-        self.navigate_remote(String::new(), cx);
+        let home = self
+            .modules
+            .ssh
+            .panel()
+            .remote
+            .as_ref()
+            .and_then(|browser| browser.home.clone())
+            .unwrap_or_default();
+        self.navigate_remote(home, cx);
     }
 
     pub(crate) fn refresh_remote_current(&mut self, cx: &mut Context<Self>) {
-        let Some(browser) = &mut self.modules.ssh.remote else {
+        let Some(browser) = &mut self.modules.ssh.panel_mut().remote else {
             return;
         };
         let current = browser.current.clone();
         browser.entries.remove(&current);
         browser.loading.remove(&current);
         browser.selected = None;
+        browser.selected_paths.clear();
         self.start_remote_load(current, cx);
         cx.notify();
     }
 
     pub(crate) fn select_remote(&mut self, path: String, cx: &mut Context<Self>) {
-        if let Some(browser) = &mut self.modules.ssh.remote {
-            browser.selected = Some(path);
+        self.select_remote_with(path, Modifiers::default(), cx);
+    }
+    pub(crate) fn select_remote_with(
+        &mut self,
+        path: String,
+        modifiers: Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        let filter = self
+            .modules
+            .ssh
+            .panel()
+            .remote_filter
+            .read(cx)
+            .content()
+            .to_lowercase();
+        let ordered = self
+            .ssh_remote_entries()
+            .into_iter()
+            .filter(|entry| filter.is_empty() || entry.name.to_lowercase().contains(&filter))
+            .collect::<Vec<_>>();
+        if let Some(browser) = &mut self.modules.ssh.panel_mut().remote {
+            crate::modules::common::selection::select(
+                &ordered
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>(),
+                &mut browser.selected_paths,
+                browser.selected.as_ref(),
+                path.clone(),
+                modifiers.control || modifiers.platform,
+                modifiers.shift,
+            );
+            if !modifiers.shift {
+                browser.selected = Some(path);
+            }
         }
         cx.notify();
     }
-
     pub(crate) fn select_local(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if let Some(browser) = &mut self.modules.ssh.local {
-            browser.selected = Some(path);
+        self.select_local_with(path, Modifiers::default(), cx);
+    }
+    pub(crate) fn select_local_with(
+        &mut self,
+        path: PathBuf,
+        modifiers: Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        let ordered = self.ssh_local_entries();
+        if let Some(browser) = &mut self.modules.ssh.panel_mut().local {
+            crate::modules::common::selection::select(
+                &ordered
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>(),
+                &mut browser.selected_paths,
+                browser.selected.as_ref(),
+                path.clone(),
+                modifiers.control || modifiers.platform,
+                modifiers.shift,
+            );
+            if !modifiers.shift {
+                browser.selected = Some(path);
+            }
         }
         cx.notify();
     }
 
     pub(crate) fn navigate_local(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if let Some(browser) = &mut self.modules.ssh.local {
+        if let Some(browser) = &mut self.modules.ssh.panel_mut().local {
             browser.navigate(path);
         }
-        cx.notify();
+        self.changed(cx);
     }
 
     pub(crate) fn local_back(&mut self, cx: &mut Context<Self>) {
-        if let Some(browser) = &mut self.modules.ssh.local {
+        if let Some(browser) = &mut self.modules.ssh.panel_mut().local {
             browser.back();
         }
-        cx.notify();
+        self.changed(cx);
     }
 
     pub(crate) fn local_up(&mut self, cx: &mut Context<Self>) {
-        if let Some(browser) = &mut self.modules.ssh.local {
+        if let Some(browser) = &mut self.modules.ssh.panel_mut().local {
             browser.up();
         }
-        cx.notify();
+        self.changed(cx);
     }
 
     pub(crate) fn local_home(&mut self, cx: &mut Context<Self>) {
-        if let Some(browser) = &mut self.modules.ssh.local {
+        if let Some(browser) = &mut self.modules.ssh.panel_mut().local {
             browser.navigate(LocalBrowser::home());
         }
-        cx.notify();
+        self.changed(cx);
     }
 
     pub(crate) fn refresh_local(&mut self, cx: &mut Context<Self>) {
-        if let Some(browser) = &mut self.modules.ssh.local {
+        if let Some(browser) = &mut self.modules.ssh.panel_mut().local {
             browser.refresh();
         }
-        cx.notify();
-    }
-
-    fn sync_ssh_terminal(&mut self, path: &str, cx: &mut Context<Self>) {
-        let Some(key) = self.active_session_key() else {
-            return;
-        };
-        if key.module != crate::modules::ModuleId::Ssh {
-            return;
-        }
-        let Some(pane) = self
-            .workspaces
-            .get(&key)
-            .map(|workspace| workspace.state.focused)
-        else {
-            return;
-        };
-        let Some(terminal) = self.terminals.get(&(key, pane)) else {
-            return;
-        };
-        let quoted = path.replace('\'', "'\\''");
-        let command = format!("cd -- '{quoted}' 2>/dev/null\n");
-        let view = terminal.read(cx);
-        let mut session = lock_unpoisoned(&view.session);
-        let _ = session.send(command.as_bytes());
+        self.changed(cx);
     }
 
     pub(crate) fn toggle_local_panel(&mut self, cx: &mut Context<Self>) {
-        self.modules.ssh.local_visible = !self.modules.ssh.local_visible;
-        if self.modules.ssh.local_visible && self.modules.ssh.local.is_none() {
-            self.modules.ssh.local = Some(LocalBrowser::new(LocalBrowser::home()));
+        self.modules.ssh.panel_mut().local_visible = !self.modules.ssh.panel().local_visible;
+        if self.modules.ssh.panel().local_visible && self.modules.ssh.panel().local.is_none() {
+            self.modules.ssh.panel_mut().local = Some(LocalBrowser::new(LocalBrowser::home()));
         }
-        cx.notify();
+        self.changed(cx);
     }
 
     pub(crate) fn open_remote_file(&mut self, remote: String, cx: &mut Context<Self>) {
-        let Some(browser) = &self.modules.ssh.remote else {
+        let Some(browser) = &self.modules.ssh.panel().remote else {
             return;
         };
         let key = SessionKey::ssh(browser.connection.clone());
@@ -242,167 +305,62 @@ impl MintoolApp {
     }
 
     pub(crate) fn download_remote_file(&mut self, remote: String, cx: &mut Context<Self>) {
-        let Some(browser) = &self.modules.ssh.remote else {
-            return;
-        };
-        let Some(connection) = self.connection_of(&browser.connection) else {
-            return;
-        };
-        let home = LocalBrowser::home();
-        let downloads = home.join("Downloads");
-        let directory = if downloads.is_dir() { downloads } else { home };
-        let name = basename(&remote).to_string();
-        let destination = unique_download_path(directory.join(&name));
-        self.transfer_remote_file(connection, remote, name, destination, cx);
+        self.enqueue_downloads(vec![(remote, false)], default_download_directory(), cx);
     }
-
     pub(crate) fn upload_selected_local(&mut self, cx: &mut Context<Self>) {
-        let Some(remote) = &self.modules.ssh.remote else {
-            return;
-        };
-        let Some(local) = &self.modules.ssh.local else {
-            return;
-        };
-        let Some(entry) = local.selected_file().cloned() else {
-            self.modules.ssh.transfer_status = Some(TransferStatus::error("请先选择本地文件"));
-            cx.notify();
-            return;
-        };
-        let Some(connection) = self.connection_of(&remote.connection) else {
+        let Some(remote) = &self.modules.ssh.panel().remote else {
             return;
         };
         if !remote.entries.contains_key(&remote.current) {
-            self.modules.ssh.transfer_status =
-                Some(TransferStatus::error("远程目录尚未加载完成，请稍后重试"));
+            self.error = Some("远程目录尚未加载完成".into());
             cx.notify();
             return;
         }
-        let remote_dir = remote.current.clone();
-        let existing = remote
-            .entries
-            .get(&remote_dir)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let remote_name = unique_remote_name(existing, &entry.name);
-        let remote_path = join_remote(&remote_dir, &remote_name);
-        let display = format!("~/{}", remote_path);
-        let executor = cx.background_executor().clone();
-        let local_path = entry.path.clone();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let task_cancel = cancel.clone();
-        let check_cancel = cancel.clone();
-        let progress = Arc::new(sftp::TransferProgress::default());
-        self.modules.ssh.transfer_status = Some(TransferStatus::running_progress(
-            format!("正在上传 {}…", entry.name),
-            cancel,
-            progress.clone(),
-        ));
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = executor
-                .spawn(async move {
-                    sftp::upload_to_with_progress(
-                        &connection,
-                        &local_path,
-                        &remote_path,
-                        task_cancel,
-                        progress,
-                    )
-                })
-                .await;
-            let cancelled = check_cancel.load(Ordering::Relaxed);
-            let _ = this.update(cx, |this, cx| {
-                this.modules.ssh.transfer_status = Some(match result {
-                    Ok(()) => TransferStatus::info(format!("已上传到 {display}")),
-                    Err(_) if cancelled => TransferStatus::error("已取消上传"),
-                    Err(error) => TransferStatus::error(format!("上传失败：{error:#}")),
-                });
-                if let Some(browser) = &mut this.modules.ssh.remote {
-                    browser.entries.remove(&remote_dir);
-                    browser.loading.remove(&remote_dir);
-                }
-                this.start_remote_load(remote_dir.clone(), cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    pub(crate) fn download_selected_remote(&mut self, cx: &mut Context<Self>) {
-        let Some(remote) = &self.modules.ssh.remote else {
-            return;
-        };
-        let Some(entry) = selected_remote_file(remote).cloned() else {
-            self.modules.ssh.transfer_status = Some(TransferStatus::error("请先选择远程文件"));
-            cx.notify();
-            return;
-        };
-        let Some(connection) = self.connection_of(&remote.connection) else {
-            return;
-        };
-        let directory = self
+        let destination = remote.current.clone();
+        let paths = self
             .modules
             .ssh
+            .panel()
+            .local
+            .as_ref()
+            .map(|browser| {
+                if browser.selected_paths.is_empty() {
+                    browser.selected.iter().cloned().collect()
+                } else {
+                    browser.selected_paths.iter().cloned().collect()
+                }
+            })
+            .unwrap_or_default();
+        self.enqueue_uploads(paths, destination, cx);
+    }
+    pub(crate) fn download_selected_remote(&mut self, cx: &mut Context<Self>) {
+        let Some(remote) = &self.modules.ssh.panel().remote else {
+            return;
+        };
+        let paths = remote
+            .entries
+            .get(&remote.current)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        remote.selected_paths.contains(&entry.path)
+                            || (remote.selected_paths.is_empty()
+                                && remote.selected.as_ref() == Some(&entry.path))
+                    })
+                    .map(|entry| (entry.path.clone(), entry.directory))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let destination = self
+            .modules
+            .ssh
+            .panel()
             .local
             .as_ref()
             .map(|browser| browser.current.clone())
             .unwrap_or_else(default_download_directory);
-        let destination = unique_download_path(directory.join(&entry.name));
-        self.transfer_remote_file(connection, entry.path, entry.name, destination, cx);
-    }
-
-    fn transfer_remote_file(
-        &mut self,
-        connection: SshConnection,
-        remote: String,
-        name: String,
-        destination: PathBuf,
-        cx: &mut Context<Self>,
-    ) {
-        let executor = cx.background_executor().clone();
-        let display = destination.display().to_string();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let task_cancel = cancel.clone();
-        let check_cancel = cancel.clone();
-        let progress = Arc::new(sftp::TransferProgress::default());
-        self.modules.ssh.transfer_status = Some(TransferStatus::running_progress(
-            format!("正在下载 {name}…"),
-            cancel,
-            progress.clone(),
-        ));
-        cx.notify();
-        let selected = destination.clone();
-        cx.spawn(async move |this, cx| {
-            let task_destination = destination.clone();
-            let result = executor
-                .spawn(async move {
-                    sftp::download_to_with_progress(
-                        &connection,
-                        &remote,
-                        &task_destination,
-                        task_cancel,
-                        progress,
-                    )
-                })
-                .await;
-            let cancelled = check_cancel.load(Ordering::Relaxed);
-            let _ = this.update(cx, |this, cx| {
-                let success = result.is_ok();
-                this.modules.ssh.transfer_status = Some(match result {
-                    Ok(()) => TransferStatus::info(format!("已下载到 {display}")),
-                    Err(_) if cancelled => TransferStatus::error("已取消下载"),
-                    Err(error) => TransferStatus::error(format!("下载失败：{error:#}")),
-                });
-                if success {
-                    if let Some(local) = &mut this.modules.ssh.local {
-                        local.refresh();
-                        local.selected = Some(selected);
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        self.enqueue_downloads(paths, destination, cx);
     }
 
     pub(crate) fn enter_remote_directory_in_terminal(
@@ -410,48 +368,10 @@ impl MintoolApp {
         path: String,
         cx: &mut Context<Self>,
     ) {
-        let Some(browser) = &self.modules.ssh.remote else {
-            return;
-        };
-        let key = SessionKey::ssh(browser.connection.clone());
-        let Some(workspace) = self.workspaces.get_mut(&key) else {
-            return;
-        };
-        let mut ids = Vec::new();
-        workspace.state.layout.ids(&mut ids);
-        let preferred = ids.contains(&workspace.state.focused);
-        let ordered = if preferred {
-            let mut ordered = vec![workspace.state.focused];
-            ordered.extend(
-                ids.iter()
-                    .copied()
-                    .filter(|id| *id != workspace.state.focused),
-            );
-            ordered
-        } else {
-            ids.clone()
-        };
-        let Some((pane_id, terminal)) = ordered.iter().find_map(|id| {
-            self.terminals
-                .get(&(key.clone(), *id))
-                .map(|terminal| (*id, terminal.clone()))
-        }) else {
-            self.error = Some("当前 SSH 会话没有可用终端".into());
-            cx.notify();
-            return;
-        };
-        let target = if path.is_empty() {
-            "~".to_string()
-        } else {
-            format!("~/{}", path)
-        };
-        let escaped = target.replace('\'', "'\\''");
-        terminal.update(cx, |view, cx| {
-            view.send(format!("cd -- '{escaped}'\n").as_bytes(), cx);
-        });
-        workspace.state.focused = pane_id;
-        self.focus_pending = true;
-        self.changed(cx);
+        let command = super::path::directory_command(&path);
+        cx.write_to_clipboard(ClipboardItem::new_string(command));
+        self.error = Some("目录命令已复制；回到 Shell 提示符后粘贴执行".into());
+        cx.notify();
     }
 
     pub(super) fn ssh_remote_menu(
@@ -462,6 +382,21 @@ impl MintoolApp {
     ) {
         let path = entry.path.clone();
         let mut items = Vec::new();
+        if self
+            .modules
+            .ssh
+            .panel()
+            .remote
+            .as_ref()
+            .is_some_and(|browser| browser.selected_paths.len() > 1)
+        {
+            items.push(self.menu_action(
+                "remote-download-selection",
+                "下载所有选中项",
+                cx,
+                |app, _, cx| app.download_selected_remote(cx),
+            ));
+        }
         if entry.directory {
             let enter_path = path.clone();
             items.push(
@@ -472,7 +407,7 @@ impl MintoolApp {
             let terminal_path = path.clone();
             items.push(self.menu_action(
                 "remote-terminal-here",
-                "在终端中进入此目录",
+                "复制进入目录命令",
                 cx,
                 move |this, _, cx| {
                     this.enter_remote_directory_in_terminal(terminal_path.clone(), cx)
@@ -514,7 +449,9 @@ impl MintoolApp {
                 "下载到本地目录",
                 cx,
                 move |this, _, cx| {
-                    if let Some(browser) = &mut this.modules.ssh.remote {
+                    if let Some(browser) = &mut this.modules.ssh.panel_mut().remote {
+                        browser.selected_paths.clear();
+                        browser.selected_paths.insert(select_path.clone());
                         browser.selected = Some(select_path.clone());
                     }
                     this.download_selected_remote(cx);
@@ -596,7 +533,7 @@ impl MintoolApp {
             "复制远程路径",
             cx,
             move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(format!("~/{}", copy_path)));
+                cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()));
             },
         ));
         self.menu = Some((position, items));
@@ -611,6 +548,21 @@ impl MintoolApp {
     ) {
         let path = entry.path.clone();
         let mut items = Vec::new();
+        if self
+            .modules
+            .ssh
+            .panel()
+            .local
+            .as_ref()
+            .is_some_and(|browser| browser.selected_paths.len() > 1)
+        {
+            items.push(self.menu_action(
+                "local-upload-selection",
+                "上传所有选中项",
+                cx,
+                |app, _, cx| app.upload_selected_local(cx),
+            ));
+        }
         if entry.directory {
             let enter_path = path.clone();
             items.push(
@@ -634,7 +586,9 @@ impl MintoolApp {
                 "上传到远程",
                 cx,
                 move |this, _, cx| {
-                    if let Some(browser) = &mut this.modules.ssh.local {
+                    if let Some(browser) = &mut this.modules.ssh.panel_mut().local {
+                        browser.selected_paths.clear();
+                        browser.selected_paths.insert(upload_path.clone());
                         browser.selected = Some(upload_path.clone());
                     }
                     this.upload_selected_local(cx);
@@ -666,15 +620,6 @@ impl MintoolApp {
     }
 }
 
-pub(super) fn selected_remote_file(browser: &RemoteBrowser) -> Option<&RemoteEntry> {
-    let selected = browser.selected.as_deref()?;
-    browser
-        .entries
-        .get(&browser.current)?
-        .iter()
-        .find(|entry| entry.path == selected && !entry.directory)
-}
-
 pub(super) fn unique_remote_name(entries: &[RemoteEntry], name: &str) -> String {
     if !entries.iter().any(|entry| entry.name == name) {
         return name.to_string();
@@ -695,7 +640,7 @@ pub(super) fn unique_remote_name(entries: &[RemoteEntry], name: &str) -> String 
             return candidate;
         }
     }
-    name.to_string()
+    format!("{stem}-{}{extension}", uuid::Uuid::new_v4())
 }
 
 pub(super) fn unique_download_path(path: PathBuf) -> PathBuf {
@@ -718,7 +663,7 @@ pub(super) fn unique_download_path(path: PathBuf) -> PathBuf {
             return candidate;
         }
     }
-    path
+    parent.join(format!("{stem}-{}{extension}", uuid::Uuid::new_v4()))
 }
 
 pub(super) fn default_download_directory() -> PathBuf {

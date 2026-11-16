@@ -36,6 +36,7 @@ fn main() -> anyhow::Result<()> {
         .run(move |cx| {
             adabraka_ui::init(cx);
             gpui_component::init(cx);
+            mintool::ui::terminal::TerminalView::init(cx);
             adabraka_ui::set_icon_base_path("icons");
             theme::install(cx, settings.appearance);
             cx.on_window_closed(|cx| {

@@ -263,6 +263,8 @@ impl MintoolApp {
                 self.previews.remove(&(key.clone(), id));
                 self.image_previews.remove(&(key.clone(), id));
                 self.modules.ssh.remote_previews.remove(&(key.clone(), id));
+                self.modules.ssh.pane_splits.remove(&(key.clone(), id));
+                self.modules.close_pane_tools(&key, id);
                 if let Some(workspace) = self.workspaces.get_mut(&key) {
                     workspace.state.layout.close(id);
                     workspace.terminals.remove(&id);

@@ -11,9 +11,11 @@ impl MintoolApp {
         self.previews.remove(&(key.clone(), id));
         self.image_previews.remove(&(key.clone(), id));
         self.modules.ssh.remote_previews.remove(&(key.clone(), id));
+        self.modules.ssh.pane_splits.remove(&(key.clone(), id));
     }
 
     pub(crate) fn stop_terminal(&mut self, key: &SessionKey, id: u64, cx: &mut Context<Self>) {
+        self.modules.close_pane_tools(key, id);
         if let Some(workspace) = self.workspaces.get_mut(key) {
             if let Some(session) = workspace.terminals.remove(&id) {
                 lock_unpoisoned(&session).shutdown();
@@ -147,6 +149,19 @@ impl MintoolApp {
     pub fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.quit_confirmed {
             return true;
+        }
+        if self.remote_edit.as_ref().is_some_and(|state| state.saving) {
+            return false;
+        }
+        if self.remote_edit_dirty(cx) {
+            self.show_dialog(
+                Dialog::RemoteEdit(crate::modules::ssh::edit_dialog::RemoteEditDialog {
+                    quit: true,
+                }),
+                window,
+                cx,
+            );
+            return false;
         }
         let unsaved = self
             .previews

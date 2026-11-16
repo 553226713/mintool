@@ -32,6 +32,7 @@ pub use unsaved::UnsavedDialog;
 pub enum Dialog {
     Project(ProjectDialog),
     Ssh(SshDialog),
+    RemoteEdit(crate::modules::ssh::edit_dialog::RemoteEditDialog),
     Docker(DockerDialog),
     Database(DatabaseDialog),
     Settings,
@@ -122,6 +123,7 @@ impl Dialog {
         match self {
             Dialog::Project(dialog) => dialog,
             Dialog::Ssh(dialog) => dialog,
+            Dialog::RemoteEdit(dialog) => dialog,
             Dialog::Docker(dialog) => dialog,
             Dialog::Database(dialog) => dialog,
             Dialog::Settings => settings::dialog(),

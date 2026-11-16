@@ -245,7 +245,10 @@ impl Render for DockPane {
                     .state
                     .file_pane(id)
                     .or_else(|| workspace.state.layout.find_mut(id).cloned())?;
-                Some(app.render_pane(&session, &pane, bounds, window, cx))
+                let content = app.render_pane(&session, &pane, bounds, window, cx);
+                Some(crate::modules::Modules::render_pane_tools(
+                    app, &session, &pane, bounds.0, content, window, cx,
+                ))
             })
             .ok()
             .flatten();

@@ -184,7 +184,7 @@ impl MintoolApp {
             )
             .into_any_element()
     }
-    fn restart_terminal(&mut self, key: &SessionKey, id: u64, cx: &mut Context<Self>) {
+    pub(crate) fn restart_terminal(&mut self, key: &SessionKey, id: u64, cx: &mut Context<Self>) {
         self.stop_terminal(key, id, cx);
         if let Some(workspace) = self.workspaces.get_mut(key) {
             if let Some(pane) = workspace.state.layout.find_mut(id) {
@@ -259,7 +259,14 @@ impl MintoolApp {
             }
         }
         let state = self.previews[&key].2.clone();
+        let changes = self
+            .workspaces
+            .get(&session.key)
+            .and_then(|workspace| workspace.git.lines.get(path))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         let saved = state.update(cx, |state, cx| {
+            state.set_changes(changes, cx);
             state.resize(height, cx);
             state.take_saved_text()
         });

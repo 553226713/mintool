@@ -16,3 +16,5 @@ pub mod terminal_clipboard;
 pub mod terminal_input;
 pub mod terminal_processes;
 pub mod terminal_query;
+
+pub mod terminal_text;
