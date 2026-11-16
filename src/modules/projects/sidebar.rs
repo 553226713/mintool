@@ -11,25 +11,11 @@ use crate::{
 use adabraka_ui::components::{
     button::{Button, ButtonSize, ButtonVariant},
     icon::Icon,
-    input::{Input, InputSize},
 };
 use gpui::{prelude::FluentBuilder, *};
 impl MintoolApp {
-    pub(crate) fn render_navigation(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let filter = self
-            .modules
-            .projects
-            .search
-            .read(cx)
-            .content()
-            .to_lowercase();
-        let (left_width, _) = self
-            .settings
-            .panel_widths(window.viewport_size().width.into());
+    pub(crate) fn render_navigation(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let filter = self.modules.projects.search.read(cx).value().to_lowercase();
         let mut rows = Vec::new();
         rows.push(
             div()
@@ -204,41 +190,6 @@ impl MintoolApp {
                             )),
                     )
                     .child(
-                        Button::new(
-                            "toggle-recent",
-                            if self.modules.projects.sort_recent {
-                                "最近"
-                            } else {
-                                "默认"
-                            },
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .tooltip("按最近打开时间排序")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.modules.projects.sort_recent = !this.modules.projects.sort_recent;
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        Button::new(
-                            "toggle-archived",
-                            if self.modules.projects.show_archived {
-                                "隐藏归档"
-                            } else {
-                                "显示归档"
-                            },
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .tooltip("显示或隐藏已归档项目")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.modules.projects.show_archived =
-                                !this.modules.projects.show_archived;
-                            cx.notify();
-                        })),
-                    )
-                    .child(
                         Button::new("add-group", "")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
@@ -253,20 +204,9 @@ impl MintoolApp {
                             })),
                     ),
             )
-            .child(
-                div().w_full().flex().flex_col().px_4().pb_2().child(
-                    Input::new(&self.modules.projects.search)
-                        .map(|mut input| {
-                            input.style().align_items = Some(AlignItems::Stretch);
-                            input
-                        })
-                        .w(px(left_width - 32.))
-                        .min_w(px(left_width - 32.))
-                        .size(InputSize::Sm)
-                        .placeholder("搜索项目…")
-                        .prefix(Icon::new("search").size(px(13.)).color(theme::muted())),
-                ),
-            )
+            .child(div().w_full().flex().flex_col().px_4().pb_2().child(
+                crate::ui::common::text_input::search_input(&self.modules.projects.search),
+            ))
             .child(
                 div()
                     .id("project-list")

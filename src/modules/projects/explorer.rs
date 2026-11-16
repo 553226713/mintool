@@ -35,21 +35,20 @@ impl MintoolApp {
             .projects
             .file_filter
             .read(cx)
-            .content()
+            .value()
             .trim()
             .to_lowercase();
         let filter_row = (!self.changes).then(|| {
             div()
-                .px_3()
+                .flex()
+                .flex_col()
+                .w_full()
+                .flex_none()
+                .px_2()
                 .pb_2()
-                .child(
-                    Input::new(&self.modules.projects.file_filter)
-                        .map(|mut input| {
-                            input.style().align_items = Some(AlignItems::Stretch);
-                            input
-                        })
-                        .w_full(),
-                )
+                .child(crate::ui::common::text_input::search_input(
+                    &self.modules.projects.file_filter,
+                ))
                 .into_any_element()
         });
         let commit_ready = self.changes
@@ -59,24 +58,24 @@ impl MintoolApp {
                 .projects
                 .commit_input
                 .read(cx)
-                .content()
+                .value()
                 .trim()
                 .is_empty();
         let commit_row = (self.changes && git_ready).then(|| {
             div()
-                .px_3()
+                .w_full()
+                .flex_none()
+                .px_2()
                 .pb_2()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(Input::new(&self.modules.projects.commit_input)),
-                )
+                .child(div().flex().flex_col().flex_1().min_w_0().child(
+                    crate::ui::common::text_input::text_input(&self.modules.projects.commit_input),
+                ))
                 .child(
                     Button::new("commit-git", "提交")
+                        .flex_none()
                         .size(ButtonSize::Sm)
                         .disabled(!commit_ready)
                         .on_click(
@@ -447,7 +446,7 @@ impl MintoolApp {
                     .when(!directory, |row| row.child(div().w(px(10.))))
                     .child(file_icon(&entry.path, directory, expanded))
                     .when(renaming, |row| {
-                        row.child(div().flex_1().min_w_0().child(
+                        row.child(div().flex().flex_col().flex_1().min_w_0().child(
                             Input::new(&self.modules.projects.rename_input).size(InputSize::Sm),
                         ))
                     })

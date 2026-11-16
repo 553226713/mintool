@@ -60,7 +60,7 @@ fn main() -> anyhow::Result<()> {
             };
             cx.open_window(options, |window, cx| {
                 window.set_window_title(&format!("Mintool {}", mintool::VERSION));
-                let app = cx.new(|cx| MintoolApp::new(storage, settings, projects, cx));
+                let app = cx.new(|cx| MintoolApp::new(storage, settings, projects, window, cx));
                 let close_app = app.clone();
                 let root = cx.new(|cx| gpui_component::Root::new(app, window, cx));
                 window.on_window_should_close(cx, move |window, cx| {

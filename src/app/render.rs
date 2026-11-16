@@ -110,7 +110,7 @@ impl Render for MintoolApp {
             None
         };
         let navigation = match self.modules.active {
-            ModuleId::Projects => self.render_navigation(window, cx),
+            ModuleId::Projects => self.render_navigation(cx),
             ModuleId::Ssh => self.render_ssh_sidebar(window, cx),
             ModuleId::Docker => self.render_docker_sidebar(window, cx),
             ModuleId::Database => self.render_database_sidebar(window, cx),

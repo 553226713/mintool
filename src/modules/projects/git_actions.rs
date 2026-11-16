@@ -47,7 +47,7 @@ impl MintoolApp {
             .projects
             .commit_input
             .read(cx)
-            .content()
+            .value()
             .trim()
             .to_string();
         if message.is_empty() {

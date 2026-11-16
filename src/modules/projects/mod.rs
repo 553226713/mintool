@@ -18,10 +18,10 @@ use std::{collections::BTreeSet, path::PathBuf};
 /// Sidebar state owned by the Projects module.
 pub struct ProjectModule {
     pub registry: ProjectRegistry,
-    pub search: Entity<InputState>,
+    pub search: Entity<gpui_component::input::InputState>,
     pub group_select: Entity<Select<Option<String>>>,
-    pub commit_input: Entity<InputState>,
-    pub file_filter: Entity<InputState>,
+    pub commit_input: Entity<gpui_component::input::InputState>,
+    pub file_filter: Entity<gpui_component::input::InputState>,
     pub rename_input: Entity<InputState>,
     pub selected_files: BTreeSet<PathBuf>,
     pub renaming: Option<PathBuf>,

@@ -5,4 +5,5 @@ pub mod drag_item;
 pub mod file_icon;
 pub mod format;
 pub mod resize;
+pub mod text_input;
 pub mod theme;

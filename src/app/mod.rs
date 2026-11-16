@@ -100,13 +100,17 @@ impl MintoolApp {
         storage: Storage,
         mut settings: Settings,
         projects: ProjectRegistry,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         settings.font_size = settings.font_size.clamp(10., 28.);
         crate::services::terminal::set_scrollback(settings.terminal_scrollback);
-        let project_search = cx.new(|cx| InputState::new(cx).placeholder("搜索项目…"));
-        let commit_input = cx.new(|cx| InputState::new(cx).placeholder("提交说明…"));
-        let file_filter = cx.new(|cx| InputState::new(cx).placeholder("筛选文件…"));
+        let project_search = cx
+            .new(|cx| gpui_component::input::InputState::new(window, cx).placeholder("搜索项目…"));
+        let commit_input = cx
+            .new(|cx| gpui_component::input::InputState::new(window, cx).placeholder("提交说明…"));
+        let file_filter = cx
+            .new(|cx| gpui_component::input::InputState::new(window, cx).placeholder("筛选文件…"));
         let rename_input = cx.new(InputState::new);
         let ssh_search = cx.new(|cx| InputState::new(cx).placeholder("搜索 SSH 连接…"));
         let ssh_remote_filter = cx.new(|cx| InputState::new(cx).placeholder("筛选远端文件…"));
@@ -187,17 +191,17 @@ impl MintoolApp {
             test_status: None,
         };
         let project_subscription = cx.subscribe(&project_search, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
+            if matches!(event, gpui_component::input::InputEvent::Change) {
                 cx.notify();
             }
         });
         let commit_subscription = cx.subscribe(&commit_input, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
+            if matches!(event, gpui_component::input::InputEvent::Change) {
                 cx.notify();
             }
         });
         let filter_subscription = cx.subscribe(&file_filter, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
+            if matches!(event, gpui_component::input::InputEvent::Change) {
                 cx.notify();
             }
         });
