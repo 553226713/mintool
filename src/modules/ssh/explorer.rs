@@ -292,7 +292,13 @@ impl MintoolApp {
         let Some(workspace) = self.workspaces.get_mut(&key) else {
             return;
         };
-        let anchor = if workspace.state.file_pane(workspace.state.focused).is_some() {
+        let anchor = if workspace.state.file_pane(workspace.state.focused).is_some()
+            || workspace
+                .state
+                .layout
+                .find(workspace.state.focused)
+                .is_some()
+        {
             workspace.state.focused
         } else {
             workspace.state.layout.first_id()

@@ -157,21 +157,18 @@ impl MintoolApp {
             .flex()
             .flex_col()
             .bg(theme::background())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    let mut changed = false;
-                    if let Some(workspace) = this.workspaces.get_mut(&body_key) {
-                        if workspace.state.focused != id {
-                            workspace.state.focused = id;
-                            changed = true;
-                        }
+            .capture_any_mouse_down(cx.listener(move |this, _, _, cx| {
+                let mut changed = false;
+                if let Some(workspace) = this.workspaces.get_mut(&body_key) {
+                    if workspace.state.focused != id {
+                        workspace.state.focused = id;
+                        changed = true;
                     }
-                    if changed {
-                        this.changed(cx);
-                    }
-                }),
-            )
+                }
+                if changed {
+                    this.changed(cx);
+                }
+            }))
             .child(
                 div()
                     .flex_1()

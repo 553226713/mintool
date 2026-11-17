@@ -19,9 +19,9 @@ impl DockLayout {
     pub fn add_tab_after(&mut self, anchor: u64, pane: u64) -> bool {
         match self {
             Self::Tabs { panes, active } => {
-                if panes.contains(&anchor) {
-                    panes.push(pane);
-                    *active = panes.len() - 1;
+                if let Some(index) = panes.iter().position(|id| *id == anchor) {
+                    panes.insert(index + 1, pane);
+                    *active = index + 1;
                     true
                 } else {
                     false

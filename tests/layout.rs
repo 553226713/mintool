@@ -2,6 +2,40 @@ use mintool::workspace::dock_layout::DockLayout;
 use mintool::workspace::layout::{Axis, Layout};
 
 #[test]
+fn new_file_tabs_follow_the_selected_tab_in_its_split_group() {
+    let mut layout = DockLayout::Split {
+        axis: Axis::Horizontal,
+        sizes: vec![400., 800.],
+        children: vec![
+            DockLayout::Tabs {
+                panes: vec![1, 3, 4],
+                active: 0,
+            },
+            DockLayout::Tabs {
+                panes: vec![2, 5],
+                active: 0,
+            },
+        ],
+    };
+    assert!(layout.add_tab_after(1, 6));
+    assert!(layout.add_tab_after(2, 7));
+    assert!(!layout.add_tab_after(99, 8));
+    let restored: DockLayout =
+        serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
+    let DockLayout::Split { children, .. } = &restored else {
+        panic!("expected split groups");
+    };
+    for (group, expected) in children.iter().zip([vec![1, 6, 3, 4], vec![2, 7, 5]]) {
+        let DockLayout::Tabs { panes, active } = group else {
+            panic!("expected tabs");
+        };
+        assert_eq!(panes, &expected);
+        assert_eq!(*active, 1);
+    }
+    assert!(restored.valid_for(&[1, 2, 3, 4, 5, 6, 7]));
+}
+
+#[test]
 fn dock_tabs_preserve_order_active_tab_and_all_pane_ids_on_reload() {
     let layout = DockLayout::Split {
         axis: Axis::Horizontal,

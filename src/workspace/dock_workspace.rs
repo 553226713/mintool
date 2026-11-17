@@ -132,8 +132,11 @@ impl MintoolApp {
                 .get(&anchor)
                 .and_then(|panel| panel.read(cx).group.clone());
             if let Some(group) = group {
+                let anchor_id = dock.panels[&anchor].entity_id();
                 let panel_view: Arc<dyn PanelView> = Arc::new(panel.clone());
-                let _ = group.update(cx, |group, cx| group.add_panel(panel_view, window, cx));
+                let _ = group.update(cx, |group, cx| {
+                    group.add_panel_after(panel_view, anchor_id, window, cx)
+                });
                 dock.panels.insert(next, panel);
                 dock.count.store(dock.panels.len(), Ordering::Relaxed);
             } else if let Some(workspace) = self.workspaces.get_mut(&key) {

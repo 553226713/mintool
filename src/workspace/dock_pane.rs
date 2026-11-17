@@ -56,6 +56,8 @@ impl Panel for DockPane {
         let key = self.session.key.clone();
         let middle_key = key.clone();
         let middle_app = app.clone();
+        let select_key = key.clone();
+        let select_app = app.clone();
         let (closed, file_name, query_name, is_document, showing_document) =
             app.upgrade()
                 .map_or((false, None, None, false, false), |app| {
@@ -133,6 +135,14 @@ impl Panel for DockPane {
             .gap_1()
             .child(name)
             .children(close_button)
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                let _ = select_app.update(cx, |app, cx| {
+                    if let Some(workspace) = app.workspaces.get_mut(&select_key) {
+                        workspace.state.focused = id;
+                    }
+                    app.changed(cx);
+                });
+            })
             .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
                 let _ = middle_app.update(cx, |app, cx| {
                     app.request_close_pane(&middle_key, id, window, cx)

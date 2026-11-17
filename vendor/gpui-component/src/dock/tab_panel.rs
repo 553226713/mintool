@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext, Context, Corner, DismissEvent, Div, DragMoveEvent, Empty, Entity,
+    App, AppContext, Context, Corner, DismissEvent, Div, DragMoveEvent, Empty, Entity, EntityId,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement,
     Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, WeakEntity, Window, div, prelude::FluentBuilder, px, relative, rems,
@@ -243,6 +243,19 @@ impl TabPanel {
         cx: &mut Context<Self>,
     ) {
         self.add_panel_with_active(panel, true, window, cx);
+    }
+
+    /// Insert and activate a panel immediately after the given panel.
+    pub fn add_panel_after(
+        &mut self,
+        panel: Arc<dyn PanelView>,
+        anchor: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ix) = self.panels.iter().position(|p| p.panel_id(cx) == anchor) {
+            self.insert_panel_at(panel, ix + 1, window, cx);
+        }
     }
 
     fn add_panel_with_active(
