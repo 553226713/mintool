@@ -208,6 +208,9 @@ impl Element for TerminalSurface {
             let height = px(view.font_size * 1.55);
             view.bounds = bounds;
             view.cell_size = size(width, height);
+            if bounds.size.width < width || bounds.size.height < height {
+                return;
+            }
             let rows = (bounds.size.height / height).floor().max(1.) as u16;
             let cols = (bounds.size.width / width).floor().max(2.) as u16;
             if let Err(error) = lock_unpoisoned(&view.session).resize(rows, cols) {

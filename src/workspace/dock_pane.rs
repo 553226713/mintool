@@ -102,7 +102,16 @@ impl Panel for DockPane {
         } else if closed {
             "空面板".to_string()
         } else {
-            format!("终端 {id}")
+            let number = app
+                .upgrade()
+                .and_then(|app| {
+                    app.read(cx)
+                        .workspaces
+                        .get(&key)
+                        .map(|workspace| workspace.state.terminal_number(id))
+                })
+                .unwrap_or(1);
+            format!("终端 {number}")
         };
         let close_app = app.clone();
         let close_button = (!showing_document || is_document).then(|| {
@@ -164,7 +173,11 @@ impl Panel for DockPane {
             return;
         }
         let (app, key, id) = (self.app.clone(), self.session.key.clone(), self.id);
-        window.defer(cx, move |_, cx| {
+        let focus = self.focus.clone();
+        window.defer(cx, move |window, cx| {
+            if !focus.contains_focused(window, cx) {
+                return;
+            }
             let _ = app.update(cx, |app, cx| {
                 if let Some(workspace) = app.workspaces.get_mut(&key) {
                     workspace.state.focused = id;

@@ -14,12 +14,11 @@ impl Render for MintoolApp {
             }
         }
         let overlays = self.dialog.is_some()
-            || self.menu.is_some()
             || self.directory_picker.is_some()
             || self.quick_open.is_some()
             || self.command_palette.is_some()
-            || self.remote_edit.is_some()
-            || cx.has_active_drag();
+            || self.remote_edit.is_some();
+        let menu_open = self.menu.is_some();
         let active_session = self.active_session_key();
         for ((session, id), terminal) in &self.system_terminals {
             let selected = active_session.as_ref() == Some(session);
@@ -38,10 +37,13 @@ impl Render for MintoolApp {
                 });
             let showing_terminal = self
                 .workspaces
-                .get_mut(session)
-                .and_then(|workspace| workspace.state.layout.find_mut(*id))
+                .get(session)
+                .and_then(|workspace| workspace.state.layout.find(*id))
                 .is_some_and(|pane| pane.is_terminal());
             terminal.update(cx, |view, cx| {
+                if !menu_open {
+                    view.set_menu_bounds(None, window);
+                }
                 let allowed = !overlays && selected && active && showing_terminal;
                 if view.allowed != allowed {
                     view.set_allowed(allowed);
@@ -216,7 +218,7 @@ impl Render for MintoolApp {
             .child(div().flex_1().min_w_0().h_full().child(panels));
         let status = self.status_bar(cx);
         let dialog = self.render_dialog(cx);
-        let menu = self.render_context_menu(cx);
+        let menu = self.render_context_menu(window, cx);
         div()
             .size_full()
             .relative()

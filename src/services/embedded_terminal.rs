@@ -7,8 +7,10 @@ use std::{
 };
 use x11rb::{
     connection::Connection,
+    protocol::shape::{ConnectionExt as _, SK, SO},
     protocol::xproto::{
-        ConfigureWindowAux, ConnectionExt, CreateWindowAux, InputFocus, KeyButMask, WindowClass,
+        ClipOrdering, ConfigureWindowAux, ConnectionExt, CreateWindowAux, Gravity, InputFocus,
+        KeyButMask, Rectangle, WindowClass,
     },
     rust_connection::RustConnection,
     COPY_DEPTH_FROM_PARENT,
@@ -23,6 +25,7 @@ pub struct EmbeddedTerminal {
     visible: bool,
     children: Vec<u32>,
     button_down: bool,
+    menu: Option<(i16, i16, u16, u16, u16, u16)>,
 }
 
 impl EmbeddedTerminal {
@@ -46,7 +49,7 @@ impl EmbeddedTerminal {
                 0,
                 WindowClass::INPUT_OUTPUT,
                 0,
-                &CreateWindowAux::new(),
+                &CreateWindowAux::new().bit_gravity(Gravity::NORTH_WEST),
             )?
             .check()?;
         connection.flush()?;
@@ -76,6 +79,7 @@ impl EmbeddedTerminal {
             visible: false,
             children: Vec::new(),
             button_down: false,
+            menu: None,
         })
     }
     pub fn position(&mut self, x: i16, y: i16, width: u16, height: u16) -> Result<()> {
@@ -120,11 +124,59 @@ impl EmbeddedTerminal {
         }
         Ok(())
     }
-    pub fn poll_focus(&mut self) -> Result<()> {
-        self.refresh_children()?;
+    pub fn set_menu_bounds(&mut self, menu: Option<Rectangle>) -> Result<()> {
+        let (Some((x, y, width, height)), Some(menu)) = (self.bounds, menu) else {
+            if self.menu.is_some() {
+                for kind in [SK::BOUNDING, SK::INPUT] {
+                    self.connection
+                        .shape_mask(SO::SET, kind, self.host, 0, 0, x11rb::NONE)?;
+                }
+                self.connection.flush()?;
+                self.menu = None;
+            }
+            return Ok(());
+        };
+        let menu = Rectangle {
+            x: menu.x.saturating_sub(x),
+            y: menu.y.saturating_sub(y),
+            ..menu
+        };
+        let shape = (menu.x, menu.y, menu.width, menu.height, width, height);
+        if self.menu != Some(shape) {
+            self.connection
+                .shape_mask(SO::SET, SK::BOUNDING, self.host, 0, 0, x11rb::NONE)?;
+            self.connection.shape_rectangles(
+                SO::SUBTRACT,
+                SK::BOUNDING,
+                ClipOrdering::UNSORTED,
+                self.host,
+                0,
+                0,
+                &[menu],
+            )?;
+            self.connection.shape_rectangles(
+                SO::SET,
+                SK::INPUT,
+                ClipOrdering::UNSORTED,
+                self.host,
+                0,
+                0,
+                &[],
+            )?;
+            self.connection.flush()?;
+            self.menu = Some(shape);
+        }
+        Ok(())
+    }
+    pub fn poll_focus(&mut self) -> Result<bool> {
+        if !self.visible || self.menu.is_some() {
+            self.button_down = false;
+            return Ok(false);
+        }
         let pointer = self.connection.query_pointer(self.host)?.reply()?;
         let button_down = pointer.mask.contains(KeyButMask::BUTTON1);
-        if button_down && !self.button_down && pointer.child != x11rb::NONE {
+        let clicked = button_down && !self.button_down && pointer.child != x11rb::NONE;
+        if clicked {
             let target = deepest_child(&self.connection, pointer.child)?;
             self.connection
                 .set_input_focus(InputFocus::POINTER_ROOT, target, x11rb::CURRENT_TIME)?
@@ -132,7 +184,7 @@ impl EmbeddedTerminal {
             self.connection.flush()?;
         }
         self.button_down = button_down;
-        Ok(())
+        Ok(clicked)
     }
     pub fn show(&mut self, visible: bool) -> Result<()> {
         if self.visible != visible {

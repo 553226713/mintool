@@ -54,6 +54,21 @@ impl WorkspaceState {
             .or_insert_with(|| QueryPane::new(format!("查询 {id}")));
     }
 
+    pub fn terminal_number(&self, id: u64) -> usize {
+        let mut ids = Vec::new();
+        self.layout.ids(&mut ids);
+        1 + ids
+            .into_iter()
+            .filter(|&other| {
+                other < id
+                    && self
+                        .layout
+                        .find(other)
+                        .is_some_and(|pane| pane.terminal && !pane.terminal_closed)
+            })
+            .count()
+    }
+
     pub fn pane_ids(&self) -> Vec<u64> {
         let mut ids = Vec::new();
         self.layout.ids(&mut ids);

@@ -97,10 +97,22 @@ impl SystemTerminalView {
             }
         }
     }
-    pub fn poll(&mut self, cx: &mut Context<Self>) {
+    pub fn set_menu_bounds(&mut self, bounds: Option<Bounds<Pixels>>, window: &Window) {
+        let scale = window.scale_factor();
+        if let Some(host) = &mut self.host {
+            let _ = host.set_menu_bounds(bounds.map(|bounds| x11rb::protocol::xproto::Rectangle {
+                x: (f32::from(bounds.origin.x) * scale).round() as i16,
+                y: (f32::from(bounds.origin.y) * scale).round() as i16,
+                width: (f32::from(bounds.size.width) * scale).ceil() as u16,
+                height: (f32::from(bounds.size.height) * scale).ceil() as u16,
+            }));
+        }
+    }
+    pub fn poll(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut clicked = false;
         if let Some(host) = &mut self.host {
             let _ = host.refresh_children();
-            let _ = host.poll_focus();
+            clicked = host.poll_focus().unwrap_or(false);
         }
         if !self.exited && self.host.as_mut().is_some_and(|host| host.exited()) {
             self.exited = true;
@@ -109,6 +121,7 @@ impl SystemTerminalView {
             }
             cx.notify();
         }
+        clicked && !self.exited
     }
     fn position(&mut self, bounds: Bounds<Pixels>, window: &mut Window) -> anyhow::Result<()> {
         if !self.allowed || self.exited || self.error.is_some() {

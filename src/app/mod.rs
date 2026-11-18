@@ -406,10 +406,21 @@ impl MintoolApp {
             self.error_shown = None;
             cx.notify();
         }
-        for terminal in self.system_terminals.values() {
-            terminal.update(cx, |view, cx| view.poll(cx));
-        }
         let active = self.active_session_key();
+        let mut selected = None;
+        for ((key, id), terminal) in &self.system_terminals {
+            if terminal.update(cx, |view, cx| view.poll(cx)) && active.as_ref() == Some(key) {
+                selected = Some((key.clone(), *id));
+            }
+        }
+        if let Some((key, id)) = selected {
+            if let Some(workspace) = self.workspaces.get_mut(&key) {
+                if workspace.state.focused != id {
+                    workspace.state.focused = id;
+                    self.changed(cx);
+                }
+            }
+        }
         for ((session, _), terminal) in &self.terminals {
             let dirty = {
                 let terminal = terminal.read(cx);

@@ -1,6 +1,6 @@
 [package]
 name = "mintool"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.92"
 description = "A lightweight, terminal-first project workspace"
@@ -27,7 +27,7 @@ mysql = { version = "28", default-features = false, features = ["minimal-rust"] 
 postgres = "0.19"
 rusqlite = { version = "0.42", features = ["bundled"] }
 raw-window-handle = "0.6"
-x11rb = "0.13"
+x11rb = { version = "0.13", features = ["shape"] }
 x11-clipboard = "0.9"
 libc = "=0.2.186"
 
